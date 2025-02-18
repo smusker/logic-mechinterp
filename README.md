@@ -40,6 +40,8 @@ Analyzing the Results:
 Assessment: After interventions, observe whether changes in internal representations at various positions lead to changes in both the categorization and the rule elicitation.
 Co-Variation Analysis: For each intervention, calculate the proportion of times where a change in categorization co-occurs with a change in the rule explanation.
 Aggregate Statistics: Record the total number of interventions resulting in categorization changes and the number where the rule also changed, calculating the percentage of co-variation.
+Coherence statistics: We assess the extent to which categorizations and stated rules remain consistent with each other when changing under interventions. 
+
 Visualization: Generate heatmaps for each component (residual, MLP activation, attention output) to visualize the proportion of co-variations across layers and token positions.
 Key Design Decisions:
 
