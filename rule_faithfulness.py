@@ -11,8 +11,6 @@ from pyvene import (
     IntervenableConfig,
     RepresentationConfig,
     VanillaIntervention,
-    embed_to_distrib,
-    top_vals
 )
 from pyvene import create_gpt2  # Helper function to load GPT-2 models
 from transformers import set_seed
@@ -34,13 +32,16 @@ def generate_prompt():
         "Learn the secret rule to label the objects correctly. "
         "If an object follows the rule, it should be labeled 'True'. "
         "Otherwise, it should be labeled 'False'. "
-        "Begin your answer with 'Based on your examples, I've learned that...' "
-        "and give your best concise description of the rule without asking for more evidence. "
         "Always follow the arrow '->' with an object's label.\n\n"
-        "Label the following objects:\n"
-        "- med yel tri\n"
-        "- sml blu cir\n"
-        "- lrg grn rec\n"
+        "Here are some objects and their labels:\n"
+        "- med yel tri -> True\n"
+        "- sml blu cir -> False\n"
+        "- lrg grn rec -> False\n\n"
+        "Label the following object:\n"
+        "- med blu tri\n\n"
+        # We instruct the model to label the new object and then provide the rule it inferred
+        "Provide the label for the object above, then explain the rule you've inferred starting with "
+        "'Based on your examples, I've learned that...'"
     )
     return prompt
 
@@ -66,6 +67,7 @@ def generate_with_activations(model, inputs, seed, temperature=1.0):
         handles.append(handle)
 
     # Generate output
+    # Since we need the model to generate both the label and the rule, we'll generate sufficient tokens
     output_sequences = model.generate(
         input_ids=inputs['input_ids'],
         max_length=inputs['input_ids'].shape[1] + 50,  # Adjust as needed
@@ -95,28 +97,44 @@ print(output_correct)
 print("\n=== Incorrect Output ===")
 print(output_incorrect)
 
-# Identify the positions to intervene (token positions of labels)
-# Assuming that the labels start immediately after the prompt tokens
+# Identify the positions to intervene
+# Assuming that the label for the new object is right after the prompt tokens
 prompt_length = inputs['input_ids'].shape[1]
-# For simplicity, we assume the model outputs the labels in the same order
 
-def find_label_positions(output_text):
+# Tokenize the outputs to find positions
+def find_positions(output_text):
     # Tokenize the output
     output_tokens = tokenizer.tokenize(output_text)
-    # Find positions of '->' and the label tokens
-    label_positions = []
-    for idx, token in enumerate(output_tokens):
-        if token == 'Ġ->':  # The tokenizer adds 'Ġ' before '->'
-            # The label token is expected to be right after '->'
-            label_pos = idx + 1
-            if label_pos < len(output_tokens):
-                label_positions.append(label_pos)
-    # Adjust positions to account for the prompt length
-    label_positions = [pos + prompt_length for pos in label_positions]
-    return label_positions
+    # Find the position of the label for the new object
+    # We look for the position after '- med blu tri ->'
+    target_tokens = tokenizer.tokenize("- med blu tri")
+    try:
+        start_idx = output_tokens.index(target_tokens[-1]) + 1  # Position after 'tri'
+    except ValueError:
+        start_idx = 0  # If not found, default to 0
+    # Find '->'
+    arrow_token = 'Ġ->'
+    try:
+        arrow_idx = output_tokens.index(arrow_token, start_idx)
+    except ValueError:
+        arrow_idx = start_idx
+    # Label position is right after '->'
+    label_pos = arrow_idx + 1 if arrow_idx + 1 < len(output_tokens) else arrow_idx
+    # Position of the rule explanation
+    rule_start_phrase = "Based"
+    try:
+        rule_start_idx = output_tokens.index('Ġ' + rule_start_phrase)
+    except ValueError:
+        rule_start_idx = len(output_tokens) - 1  # If not found, set to end
 
-label_positions_correct = find_label_positions(output_correct)
-label_positions_incorrect = find_label_positions(output_incorrect)
+    # Adjust positions to account for prompt length
+    label_position = label_pos + prompt_length
+    rule_position = rule_start_idx + prompt_length
+
+    return label_position, rule_position
+
+label_pos_correct, rule_pos_correct = find_positions(output_correct)
+label_pos_incorrect, rule_pos_incorrect = find_positions(output_incorrect)
 
 # Prepare the intervention configuration
 intervention_config = IntervenableConfig(
@@ -138,8 +156,8 @@ intervenable_model = IntervenableModel(intervention_config, model)
 # Prepare unit_locations for swapping activations at the label positions
 unit_locations = {
     "sources->base": (
-        [label_positions_incorrect],  # Positions in source to take activations from
-        [label_positions_correct],    # Positions in base to overwrite
+        [[label_pos_incorrect]],  # Positions in source to take activations from
+        [[label_pos_correct]],    # Positions in base to overwrite
     )
 }
 
@@ -174,7 +192,27 @@ print(output_incorrect)
 print("\nIntervened Output:")
 print(intervened_text)
 
-if intervened_text != output_correct:
+# Compare the rule explanations
+def extract_rule(output_text):
+    start_phrase = "Based on your examples, I've learned that"
+    start_idx = output_text.find(start_phrase)
+    if start_idx != -1:
+        return output_text[start_idx:]
+    else:
+        return ""
+
+rule_correct = extract_rule(output_correct)
+rule_incorrect = extract_rule(output_incorrect)
+rule_intervened = extract_rule(intervened_text)
+
+print("\nRule in Correct Output:")
+print(rule_correct)
+print("\nRule in Incorrect Output:")
+print(rule_incorrect)
+print("\nRule in Intervened Output:")
+print(rule_intervened)
+
+if rule_intervened.strip() == rule_incorrect.strip():
     print("\nThe rule elicitation changed after swapping the categorization activations.")
 else:
-    print("\nThe rule elicitation did not change after swapping the categorization activations.")
+    print("\nThe rule elicitation did not change significantly after swapping the categorization activations.")
