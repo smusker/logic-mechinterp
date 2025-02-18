@@ -51,9 +51,10 @@ rules = [
 
 def label_object(description, rule_desc):
     tokens = description.replace('-', '').split()  # Remove '-' and split
-    size = tokens[0].split('=')[1]
-    color = tokens[1].split('=')[1]
-    shape = tokens[2].split('=')[1]
+    attributes = dict(token.split('=') for token in tokens)
+    size = attributes.get('Size')
+    color = attributes.get('Color')
+    shape = attributes.get('Shape')
 
     if "BLU or a REC" in rule_desc:
         is_blu = 'BLU' == color
@@ -114,7 +115,7 @@ def compare_rules(rule1, rule2):
     keywords1 = set(rule1.lower().split())
     keywords2 = set(rule2.lower().split())
     common_keywords = keywords1.intersection(keywords2)
-    return len(common_keywords) / max(len(keywords1), len(keywords2)) > 0.5  # Threshold can be adjusted
+    return len(common_keywords) / max(len(keywords1), len(keywords2)) > 0.5  # Adjust threshold as needed
 
 def label_test_object_in_output(output_text, test_object_line):
     """
@@ -125,7 +126,7 @@ def label_test_object_in_output(output_text, test_object_line):
         lines = output_text.split('\n')
         for i, line in enumerate(lines):
             if test_object_line.strip() in line:
-                # The label is expected to be provided in the next line or after '->'
+                # The label is expected to be provided in the same line or next line
                 if '->' in line:
                     parts = line.split('->')
                     if len(parts) == 2:
@@ -168,47 +169,14 @@ def generate_prompt_and_get_token_positions(rule_desc):
     
     # Tokenize the prompt
     inputs = tokenizer(prompt, return_tensors='pt').to(device)
-    tokenized_prompt = tokenizer.tokenize(prompt)
-    
-    # Get token positions
-    token_positions = {}
-    
-    # Find positions of labels ('True', 'False') in the examples
-    label_positions = []
-    current_pos = 0
-    for example in examples[:5]:
-        label = example.split(' -> ')[1]
-        search_string = f"-> {label}"
-        search_tokens = tokenizer.tokenize(search_string)
-        try:
-            idx = tokenized_prompt.index(search_tokens[0], current_pos)
-            label_idx = idx + len(search_tokens) - 1  # Position of the label token
-            label_positions.append(label_idx)
-            current_pos = label_idx + 1
-        except ValueError:
-            continue
+    tokenized_prompt = tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
 
-    # Position of the test object's label (to be generated)
-    label_token_position = len(tokenized_prompt)
-
-    # Positions of 'Size=', 'Color=', 'Shape=' in the test object
-    test_object_tokens = tokenizer.tokenize(test_object_line)
-    test_object_token_start = tokenized_prompt.index(test_object_tokens[0])
-    # Since we know the format, we can calculate indices
-    size_idx = test_object_token_start + 2  # Position of size value
-    color_idx = test_object_token_start + 5  # Position of color value
-    shape_idx = test_object_token_start + 8  # Position of shape value
-
-    token_positions = {
-        'example_label_positions': label_positions,      # Positions of labels in examples
-        'test_object_size': size_idx,                    # Position of size value in test object
-        'test_object_color': color_idx,                  # Position of color value in test object
-        'test_object_shape': shape_idx,                  # Position of shape value in test object
-        'label_token': label_token_position,             # Position where the model will generate the label
-        'rule_start': label_token_position + 1,          # Position where the rule explanation starts
-    }
+    # Get all token positions
+    position_names = [f'Token_{i}' for i in range(len(tokenized_prompt))]
+    num_positions = len(position_names)
+    token_positions = {name: i for i, name in enumerate(position_names)}
     
-    return prompt, inputs, token_positions, test_object_line
+    return prompt, inputs, token_positions, position_names, test_object_line
 
 # Total number of layers in the model
 num_layers = model.config.n_layer
@@ -216,20 +184,18 @@ num_layers = model.config.n_layer
 # Components to intervene on
 components = ['residual', 'mlp_activation', 'attention_output']
 
-# Positions to intervene on
-position_names = [
-    'Label_Token', 'Rule_Start'
-]
-
-num_positions = len(position_names)
-
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
     print(f"\n--- Processing {rule_name}: {rule_description} ---\n")
     
     # Initialize results storage for this rule
+    prompt, inputs, token_positions, position_names, test_object_line = generate_prompt_and_get_token_positions(rule_description)
+    num_positions = len(position_names)
     co_flip_counts = np.zeros((len(components), num_layers, num_positions))
     categorization_flip_counts = np.zeros((len(components), num_layers, num_positions))
+    
+    print("Prompt:")
+    print(prompt)
     
     # Number of correct and incorrect runs to collect
     num_correct_runs = 3
@@ -238,8 +204,6 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
     # Collect correct and incorrect runs
     correct_runs = []
     incorrect_runs = []
-    
-    prompt, inputs, token_positions, test_object_line = generate_prompt_and_get_token_positions(rule_description)
     
     # List to keep track of seeds used
     used_seeds = set()
@@ -352,8 +316,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                 for comp_idx, component in enumerate(components):
                     for layer_num in range(num_layers):
                         for pos_idx, position_name in enumerate(position_names):
-                            # Positions to intervene on
-                            token_pos = token_positions[position_name.lower()]
+                            token_pos = token_positions[position_name]
                             
                             # Create intervention configuration
                             intervention_config = IntervenableConfig(
@@ -365,10 +328,10 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                 ],
                                 intervention_types=VanillaIntervention,
                             )
-    
+
                             # Initialize the IntervenableModel
                             intervenable_model = IntervenableModel(intervention_config, model)
-    
+
                             # Prepare unit_locations for swapping activations at the token position
                             unit_locations = {
                                 "sources->base": (
@@ -376,12 +339,12 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                     [[token_pos]],  # Positions in base
                                 )
                             }
-    
+
                             # Collect activations for the component and layer
                             key = (component, layer_num)
                             base_activations = {key: correct_run['activations'][key]}
                             source_activations = {key: incorrect_run['activations'][key]}
-    
+
                             # Run the intervention
                             with torch.no_grad():
                                 _, intervened_outputs = intervenable_model(
@@ -397,43 +360,43 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                     temperature=0.7,
                                     pad_token_id=tokenizer.eos_token_id,
                                 )
-    
+
                             # Decode the intervened output
                             intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
-    
+
                             # Extract assigned label and rule from intervened output
                             assigned_label_intervened = label_test_object_in_output(intervened_text, test_object_line)
                             rule_intervened = extract_rule(intervened_text)
-    
+
                             # Compare to correct run
                             assigned_label_correct = correct_run['assigned_label']
                             rule_correct = correct_run['rule']
-    
+
                             # Check if categorization flipped
                             if assigned_label_intervened is None:
                                 continue  # Skip if label not found
                             categorization_flipped = (assigned_label_intervened != assigned_label_correct)
-    
+
                             if categorization_flipped:
                                 # Increment categorization flip count
                                 categorization_flip_counts[comp_idx, layer_num, pos_idx] += 1
                                 total_cat_flips += 1
-    
+
                                 # Check if rule also changed compared to correct run
                                 if rule_intervened == "":
                                     continue  # Skip if rule not found
                                 rule_changed = not compare_rules(rule_intervened, rule_correct)
-    
+
                                 if rule_changed:
                                     # Increment co-flip count
                                     co_flip_counts[comp_idx, layer_num, pos_idx] += 1
                                     total_co_flips += 1
-    
+
         # Calculate the proportions
         with np.errstate(divide='ignore', invalid='ignore'):
             co_flip_proportions = np.true_divide(co_flip_counts, categorization_flip_counts)
             co_flip_proportions[np.isnan(co_flip_proportions)] = 0  # Set NaNs to zero where there were no flips
-    
+
         # Aggregate Statistics
         if total_cat_flips > 0:
             overall_proportion = total_co_flips / total_cat_flips
@@ -442,16 +405,16 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             print(f"indicating that the rule elicitation co-varies {overall_proportion:.2%} of the time with changes of categorizations.")
         else:
             print(f"No categorization flips occurred for {rule_name}.")
-    
+
         # Plot the results for each component
         for comp_idx, component in enumerate(components):
-            plt.figure(figsize=(12, 6))
+            plt.figure(figsize=(15, 6))
             plt.imshow(co_flip_proportions[comp_idx], aspect='auto', cmap='viridis')
             plt.colorbar(label='Proportion of Rule Changes Given Categorization Flip')
             plt.xlabel('Token Position')
             plt.ylabel('Layer')
             plt.title(f'{rule_name}: Co-Variation of Rule and Categorization\n{component.capitalize()} Component')
-            plt.xticks(ticks=range(num_positions), labels=position_names, rotation=45, ha='right')
+            plt.xticks(ticks=range(num_positions), labels=position_names, rotation=90, fontsize=6)
             plt.yticks(ticks=range(num_layers))
             plt.tight_layout()
             # Save the heatmap with an informative name
