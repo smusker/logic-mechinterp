@@ -1,3 +1,10 @@
+# Install Pyvene if not already installed
+try:
+    import pyvene
+except ModuleNotFoundError:
+    !pip install git+https://github.com/stanfordnlp/pyvene.git
+
+# Import necessary modules
 import torch
 from pyvene import (
     IntervenableModel,
@@ -10,11 +17,13 @@ from transformers import set_seed
 import numpy as np
 import random
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the model and tokenizer
+# Replace 'gpt2' with your capable model
 config, tokenizer, model = create_gpt2(name='gpt2')
 model.to(device)
 model.eval()
@@ -28,58 +37,140 @@ rule_descriptions = [
     "An object is labeled 'True' if it is blue or a rectangle.",
     "An object is labeled 'True' if it is green and small.",
     "An object is labeled 'True' if it is not a circle.",
+    "An object is labeled 'True' if it is yellow and large.",
+    "An object is labeled 'True' if it is red or a triangle.",
+    "An object is labeled 'True' if it is blue and not a square.",
+    "An object is labeled 'True' if it is not green or is large.",
+    "An object is labeled 'True' if it is small and not red.",
+    "An object is labeled 'True' if it is a circle or a rectangle.",
+    "An object is labeled 'True' if it is not yellow and not small.",
     # Add more rules as needed
 ]
 
 def label_object(description, rule_desc):
-    # Implement parsing based on the rule description
+    # Simplified parsing based on the rule description
+    tokens = description.split()
+    size = tokens[0].strip('-')
+    color = tokens[1]
+    shape = tokens[2]
+
     if "blue or a rectangle" in rule_desc:
-        is_blue = 'blu' in description
-        is_rectangle = 'rec' in description
+        is_blue = 'blu' in color
+        is_rectangle = 'rec' in shape
         return 'True' if is_blue or is_rectangle else 'False'
     elif "green and small" in rule_desc:
-        is_green = 'grn' in description
-        is_small = 'sml' in description
+        is_green = 'grn' in color
+        is_small = 'sml' in size
         return 'True' if is_green and is_small else 'False'
     elif "not a circle" in rule_desc:
-        is_circle = 'cir' in description
+        is_circle = 'cir' in shape
         return 'False' if is_circle else 'True'
-    # Add more rules as needed
+    elif "yellow and large" in rule_desc:
+        is_yellow = 'yel' in color
+        is_large = 'lrg' in size
+        return 'True' if is_yellow and is_large else 'False'
+    elif "red or a triangle" in rule_desc:
+        is_red = 'red' in color
+        is_triangle = 'tri' in shape
+        return 'True' if is_red or is_triangle else 'False'
+    elif "blue and not a square" in rule_desc:
+        is_blue = 'blu' in color
+        is_square = 'sqr' in shape
+        return 'True' if is_blue and not is_square else 'False'
+    elif "not green or is large" in rule_desc:
+        is_green = 'grn' in color
+        is_large = 'lrg' in size
+        return 'True' if not is_green or is_large else 'False'
+    elif "small and not red" in rule_desc:
+        is_small = 'sml' in size
+        is_red = 'red' in color
+        return 'True' if is_small and not is_red else 'False'
+    elif "a circle or a rectangle" in rule_desc:
+        is_circle = 'cir' in shape
+        is_rectangle = 'rec' in shape
+        return 'True' if is_circle or is_rectangle else 'False'
+    elif "not yellow and not small" in rule_desc:
+        is_yellow = 'yel' in color
+        is_small = 'sml' in size
+        return 'True' if not is_yellow and not is_small else 'False'
     else:
         return 'False'
 
+def generate_random_objects(num_objects=10):
+    sizes = ['sml', 'med', 'lrg']
+    colors = ['blu', 'grn', 'yel', 'red']
+    shapes = ['cir', 'tri', 'rec', 'sqr']
+    objects = []
+    for _ in range(num_objects):
+        size = random.choice(sizes)
+        color = random.choice(colors)
+        shape = random.choice(shapes)
+        obj = f"- {size} {color} {shape}"
+        objects.append(obj)
+    return objects
+
+def extract_rule(output_text):
+    start_phrase = "Based on your examples, I've learned that"
+    start_idx = output_text.find(start_phrase)
+    if start_idx != -1:
+        return output_text[start_idx:]
+    else:
+        return ""
+
+def label_test_object_in_output(output_text, test_object):
+    # Find the label assigned to the test object
+    test_object_line = test_object.strip()
+    idx = output_text.find(test_object_line)
+    if idx == -1:
+        return None  # Could not find test object line in output
+    after_test_object = output_text[idx + len(test_object_line):]
+    arrow_idx = after_test_object.find('->')
+    if arrow_idx == -1:
+        return None  # Could not find '->'
+    after_arrow = after_test_object[arrow_idx + 2:].strip()
+    # The label is the first word after '->'
+    label = after_arrow.split()[0]
+    return label.strip()
+
+def compare_rules(rule1, rule2):
+    """
+    Placeholder function to compare two rule descriptions.
+    Returns True if the rules are effectively the same, False otherwise.
+    Implement this function using an LLM API or semantic similarity measure.
+    """
+    # Simplified comparison for demonstration
+    return rule1.strip().lower() == rule2.strip().lower()
+
 # Total number of layers in the model
-num_layers = model.config.n_layer  # For GPT-2, this is 12
+num_layers = model.config.n_layer
+
+# Sliding window parameters
+window_size = 3  # Number of layers in each window
+step_size = 1    # Shift the window by one layer each time
+layer_indices = list(range(num_layers))
+num_windows = (num_layers - window_size) // step_size + 1
 
 # Initialize results storage
-intervention_counts = np.zeros(num_layers)  # Counts of rule changes per layer
-total_runs = 0  # Total number of runs
+intervention_counts = np.zeros(num_windows)
+total_runs = 0
 
-# Loop over multiple runs with different rules
-num_prompts = 10  # Adjust based on your resources
-for i in tqdm(range(num_prompts)):
-    # Select a rule and corresponding labeling function
-    rule_description = random.choice(rule_descriptions)
+# Parameters for the experiment
+num_rules = len(rule_descriptions)
+num_prompts_per_rule = 5     # Number of prompts per rule
+num_test_objects = 3         # Number of test objects per prompt
+max_attempts = 5             # Max attempts to find correct/incorrect runs per test object
 
-    # Generate object descriptions and labels
-    object_descriptions = [
-        '- sml yel cir',
-        '- lrg blu tri',
-        '- med grn rec',
-        '- sml blu rec',
-        '- lrg yel tri',
-        '- med blu cir',
-        '- sml grn rec',
-    ]
+# Main experimental loop
+for rule_desc in tqdm(rule_descriptions, desc="Processing Rules"):
+    for prompt_idx in range(num_prompts_per_rule):
+        # Generate object descriptions and labels for the prompt
+        object_descriptions = generate_random_objects(num_objects=10)
+        labeled_examples = []
+        for obj in object_descriptions[:5]:  # Use first 5 for examples
+            label = label_object(obj, rule_desc)
+            labeled_examples.append(f"{obj} -> {label}")
 
-    # Label examples using the rule
-    labeled_examples = []
-    for obj in object_descriptions[:5]:  # Use first 5 for examples
-        label = label_object(obj, rule_description)
-        labeled_examples.append(f"{obj} -> {label}")
-
-    # Construct the prompt
-    def generate_prompt():
+        # Construct the prompt
         prompt = (
             "Learn the secret rule to label the objects correctly. "
             "If an object follows the rule, it should be labeled 'True'. "
@@ -89,156 +180,165 @@ for i in tqdm(range(num_prompts)):
         )
         for example in labeled_examples:
             prompt += f"{example}\n"
-        prompt += "\nLabel the following object:\n"
-        test_object = object_descriptions[5]  # Use the 6th object as the test object
-        prompt += f"{test_object}\n\n"
+        prompt += "\nLabel the following objects:\n"
+        test_objects = object_descriptions[5:5+num_test_objects]
+        for test_object in test_objects:
+            prompt += f"{test_object}\n"
         prompt += (
-            "Provide the label for the object above, then explain the rule you've inferred starting with "
+            "\nProvide the labels for the objects above, then explain the rule you've inferred starting with "
             "'Based on your examples, I've learned that...'"
         )
-        return prompt, test_object
+        inputs = tokenizer(prompt, return_tensors='pt').to(device)
 
-    prompt, test_object = generate_prompt()
-    inputs = tokenizer(prompt, return_tensors='pt').to(device)
+        # For each test object, attempt to get correct and incorrect runs
+        for test_object in test_objects:
+            correct_run = None
+            incorrect_run = None
 
-    # Generate correct and incorrect runs
-    def generate_output(seed, temperature):
-        set_seed(seed)
-        activations = {}
+            # Attempt to get a correct run
+            for attempt in range(max_attempts):
+                seed = random.randint(0, 10000)
+                set_seed(seed)
+                activations_correct = {}
+                # Register hooks on all layers
+                handles = []
+                for layer_num in range(num_layers):
+                    layer = model.transformer.h[layer_num]
+                    handle = layer.register_forward_hook(
+                        lambda module, inp, outp, layer_num=layer_num: activations_correct.setdefault(layer_num, outp.detach())
+                    )
+                    handles.append(handle)
+                # Generate output
+                output_sequences = model.generate(
+                    input_ids=inputs['input_ids'],
+                    max_length=inputs['input_ids'].shape[1] + 100,
+                    do_sample=True,
+                    temperature=0.7,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                # Remove hooks
+                for handle in handles:
+                    handle.remove()
+                output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
+                assigned_label = label_test_object_in_output(output_text, test_object)
+                if assigned_label == label_object(test_object, rule_desc):
+                    correct_run = {
+                        'text': output_text,
+                        'activations': activations_correct,
+                    }
+                    break
 
-        # Function to save activations
-        def save_activation(layer_name):
-            def hook(module, input, output):
-                activations[layer_name] = output.detach()
-            return hook
+            # Attempt to get an incorrect run
+            for attempt in range(max_attempts):
+                seed = random.randint(0, 10000)
+                set_seed(seed)
+                activations_incorrect = {}
+                # Register hooks on all layers
+                handles = []
+                for layer_num in range(num_layers):
+                    layer = model.transformer.h[layer_num]
+                    handle = layer.register_forward_hook(
+                        lambda module, inp, outp, layer_num=layer_num: activations_incorrect.setdefault(layer_num, outp.detach())
+                    )
+                    handles.append(handle)
+                # Generate output
+                output_sequences = model.generate(
+                    input_ids=inputs['input_ids'],
+                    max_length=inputs['input_ids'].shape[1] + 100,
+                    do_sample=True,
+                    temperature=1.0,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                # Remove hooks
+                for handle in handles:
+                    handle.remove()
+                output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
+                assigned_label = label_test_object_in_output(output_text, test_object)
+                true_label = label_object(test_object, rule_desc)
+                if assigned_label and assigned_label != true_label:
+                    incorrect_run = {
+                        'text': output_text,
+                        'activations': activations_incorrect,
+                    }
+                    break
 
-        # Register hooks on all layers
-        handles = []
-        for layer_num in range(num_layers):
-            layer = model.transformer.h[layer_num]
-            handle = layer.register_forward_hook(save_activation(f'layer_{layer_num}'))
-            handles.append(handle)
+            # Proceed only if both runs are found
+            if not correct_run or not incorrect_run:
+                continue
 
-        # Generate output
-        output_sequences = model.generate(
-            input_ids=inputs['input_ids'],
-            max_length=inputs['input_ids'].shape[1] + 100,
-            do_sample=True,
-            temperature=temperature,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+            # Identify the categorization token position (assumed to be the same)
+            label_pos_correct = inputs['input_ids'].shape[1]  # Position after the prompt
+            label_pos_incorrect = label_pos_correct
 
-        # Remove hooks
-        for handle in handles:
-            handle.remove()
+            # Perform interventions using sliding windows
+            for window_idx, window_start in enumerate(range(0, num_layers - window_size + 1, step_size)):
+                window_layers = layer_indices[window_start:window_start + window_size]
+                representations = [
+                    RepresentationConfig(
+                        layer=layer_num,
+                        component="residual",
+                    )
+                    for layer_num in window_layers
+                ]
+                intervention_config = IntervenableConfig(
+                    representations=representations,
+                    intervention_types=VanillaIntervention,
+                )
 
-        generated_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
-        return generated_text, activations
+                # Initialize the IntervenableModel
+                intervenable_model = IntervenableModel(intervention_config, model)
 
-    # Obtain correct run
-    max_attempts = 5
-    correct_run = None
-    for attempt in range(max_attempts):
-        seed = random.randint(0, 10000)
-        output_correct, activations_correct = generate_output(seed, temperature=0.7)
-        assigned_label = label_test_object_in_output(output_correct, test_object)
-        if assigned_label == label_object(test_object, rule_description):
-            correct_run = {
-                'text': output_correct,
-                'activations': activations_correct,
-            }
-            break
+                # Prepare unit_locations for swapping activations at the label position for each layer
+                unit_locations = {
+                    "sources->base": (
+                        [[label_pos_incorrect]] * len(window_layers),  # Positions in source
+                        [[label_pos_correct]] * len(window_layers),    # Positions in base
+                    )
+                }
 
-    # Obtain incorrect run
-    incorrect_run = None
-    for attempt in range(max_attempts):
-        seed = random.randint(0, 10000)
-        output_incorrect, activations_incorrect = generate_output(seed, temperature=1.0)
-        assigned_label = label_test_object_in_output(output_incorrect, test_object)
-        if assigned_label and assigned_label != label_object(test_object, rule_description):
-            incorrect_run = {
-                'text': output_incorrect,
-                'activations': activations_incorrect,
-            }
-            break
+                # Collect activations for the layers in the window
+                base_activations = {layer: correct_run['activations'][layer] for layer in window_layers}
+                source_activations = {layer: incorrect_run['activations'][layer] for layer in window_layers}
 
-    # Proceed only if both runs are found
-    if not correct_run or not incorrect_run:
-        continue
+                # Run the intervention
+                with torch.no_grad():
+                    _, intervened_outputs = intervenable_model(
+                        base=inputs,
+                        sources=inputs,
+                        activations={
+                            'base': base_activations,
+                            'sources': source_activations,
+                        },
+                        unit_locations=unit_locations,
+                        max_length=inputs['input_ids'].shape[1] + 100,
+                        do_sample=False,  # Keep deterministic to isolate the effect of intervention
+                        temperature=0.7,
+                        pad_token_id=tokenizer.eos_token_id,
+                    )
 
-    # Identify the categorization token position (assumed to be the same in both runs)
-    label_pos_correct, rule_pos_correct = find_positions(correct_run['text'])
-    label_pos_incorrect, rule_pos_incorrect = find_positions(incorrect_run['text'])
+                # Decode the intervened output
+                intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
 
-    if label_pos_correct == 0 or label_pos_incorrect == 0:
-        continue  # Skip if label positions can't be found
+                # Extract and compare the rule
+                rule_intervened = extract_rule(intervened_text)
+                similarity_intervened = compare_rules(rule_intervened, rule_desc)
 
-    # For each layer, perform the intervention
-    for layer_num in range(num_layers):
-        # Prepare the intervention configuration
-        intervention_config = IntervenableConfig(
-            representations=[
-                RepresentationConfig(
-                    layer=layer_num,
-                    component="residual",
-                ),
-            ],
-            intervention_types=VanillaIntervention,
-        )
+                # Record the result
+                if not similarity_intervened:
+                    intervention_counts[window_idx] += 1
 
-        # Initialize the IntervenableModel
-        intervenable_model = IntervenableModel(intervention_config, model)
+            total_runs += 1  # Increment total runs for each test object
 
-        # Prepare unit_locations for swapping activations at the categorization token position
-        unit_locations = {
-            "sources->base": (
-                [[label_pos_incorrect]],  # Position in source
-                [[label_pos_correct]],    # Position in base
-            )
-        }
-
-        # Run the intervention
-        with torch.no_grad():
-            _, intervened_outputs = intervenable_model(
-                base=inputs,
-                sources=inputs,
-                activations={
-                    'base': correct_run['activations'],
-                    'sources': incorrect_run['activations'],
-                },
-                unit_locations=unit_locations,
-                max_length=inputs['input_ids'].shape[1] + 100,
-                do_sample=False,  # Keep deterministic to isolate effect of intervention
-                temperature=0.7,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-
-        # Decode the intervened output
-        intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
-
-        # Extract the rule from the intervened output
-        rule_intervened = extract_rule(intervened_text)
-
-        # Compare the intervened rule to the correct rule
-        similarity_intervened = compare_rules(rule_intervened, rule_description)
-
-        # If the intervened rule does not match the correct rule, count as a change
-        if not similarity_intervened:
-            intervention_counts[layer_num] += 1
-
-    total_runs += 1
-
-# After processing all prompts, calculate the proportion
+# After processing all prompts and test objects, calculate the proportion
 intervention_proportions = intervention_counts / total_runs
 
 # Plot the results
-import matplotlib.pyplot as plt
+window_centers = [window_start + window_size // 2 for window_start in range(0, num_layers - window_size + 1, step_size)]
 
-layers = np.arange(num_layers)
-plt.figure(figsize=(10, 6))
-plt.bar(layers, intervention_proportions)
+plt.figure(figsize=(12, 6))
+plt.bar(window_centers, intervention_proportions, width=step_size)
 plt.xlabel('Layer')
 plt.ylabel('Proportion of Rule Changes')
-plt.title('Effect of Swapping Categorization Activations at Each Layer on Rule Elicitation')
-plt.xticks(layers)
+plt.title(f'Effect of Swapping Activations over Windows (size={window_size}) on Rule Elicitation')
+plt.xticks(window_centers)
 plt.show()
