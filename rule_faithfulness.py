@@ -110,13 +110,24 @@ def extract_rule(output_text):
 def compare_rules(rule1, rule2):
     """
     Implement this function using an LLM API or semantic similarity measure.
-    For now, we'll consider rules the same if they share significant keywords.
+    For demonstration, we'll consider rules the same if they share significant keywords.
     """
     # Simplistic comparison for demonstration purposes
     keywords1 = set(rule1.lower().split())
     keywords2 = set(rule2.lower().split())
     common_keywords = keywords1.intersection(keywords2)
     return len(common_keywords) / max(len(keywords1), len(keywords2)) > 0.5  # Adjust threshold as needed
+
+def assess_rule_consistency(assigned_label, test_object_description, rule_description):
+    """
+    Placeholder function to assess consistency between the assigned label
+    and the rule description.
+    Implement using an external LLM API or semantic analysis tool.
+    Return True if consistent, False otherwise.
+    """
+    # Placeholder implementation
+    # In practice, you might use an LLM to evaluate the consistency
+    return True  # Assume consistent for demonstration purposes
 
 def label_test_object_in_output(output_text, test_object_line):
     """
@@ -200,7 +211,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
     
     # Initialize results storage for this rule
     prompt, inputs, tokenized_prompt, test_object_line = generate_prompt_and_get_token_positions(rule_description)
-    max_new_tokens = 50  # Maximum number of tokens to generate
+    max_new_tokens = 5  # Maximum number of tokens to generate
     print("Prompt:")
     print(prompt)
     
@@ -252,10 +263,10 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         # Generate output
         output_sequences = model.generate(
             input_ids=inputs['input_ids'],
-            max_new_tokens=5,  # Generate only a few tokens to include the label and start of rule
+            max_new_tokens=max_new_tokens,
             do_sample=True,
             temperature=0.7,
-            pad_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
         )
         # Remove hooks
         for handle in handles:
@@ -291,10 +302,10 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         # Generate output
         output_sequences = model.generate(
             input_ids=inputs['input_ids'],
-            max_new_tokens=5,  # Generate only a few tokens to include the label and start of rule
+            max_new_tokens=max_new_tokens,
             do_sample=True,
             temperature=1.0,
-            pad_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
         )
         # Remove hooks
         for handle in handles:
@@ -330,10 +341,12 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         # Initialize results storage
         co_flip_counts = np.zeros((len(components), num_layers, num_positions))
         categorization_flip_counts = np.zeros((len(components), num_layers, num_positions))
+        consistency_counts = np.zeros((len(components), num_layers, num_positions))
         
         # Create combinations of correct and incorrect runs
         total_cat_flips = 0
         total_co_flips = 0
+        total_consistencies = 0
         for correct_run in correct_runs:
             for incorrect_run in incorrect_runs:
                 # Ensure tokens and positions align
@@ -398,7 +411,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                     max_length=max_length,
                                     do_sample=False,  # Keep deterministic to isolate the effect of intervention
                                     temperature=0.7,
-                                    pad_token_id=tokenizer.eos_token_id,
+                                    pad_token_id=tokenizer.pad_token_id,
                                 )
     
                             # Decode the intervened output
@@ -431,18 +444,33 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                     # Increment co-flip count
                                     co_flip_counts[comp_idx, layer_num, pos_idx] += 1
                                     total_co_flips += 1
+                                    
+                                    # Assess consistency between the new assigned label and the new rule
+                                    is_consistent = assess_rule_consistency(
+                                        assigned_label_intervened,
+                                        test_object_line,
+                                        rule_intervened
+                                    )
+                                    if is_consistent:
+                                        consistency_counts[comp_idx, layer_num, pos_idx] += 1
+                                        total_consistencies += 1
     
         # Calculate the proportions
         with np.errstate(divide='ignore', invalid='ignore'):
             co_flip_proportions = np.true_divide(co_flip_counts, categorization_flip_counts)
             co_flip_proportions[np.isnan(co_flip_proportions)] = 0  # Set NaNs to zero where there were no flips
+            consistency_proportions = np.true_divide(consistency_counts, co_flip_counts)
+            consistency_proportions[np.isnan(consistency_proportions)] = 0  # Set NaNs to zero where no co-flips occurred
     
         # Aggregate Statistics
         if total_cat_flips > 0:
-            overall_proportion = total_co_flips / total_cat_flips
+            overall_co_flip_proportion = total_co_flips / total_cat_flips
+            overall_consistency_proportion = total_consistencies / total_co_flips if total_co_flips > 0 else 0
             print(f"For {rule_name}, there were {int(total_cat_flips)} interventions resulting in a change of categorization,")
             print(f"and {int(total_co_flips)} of these also resulted in a corresponding rule change,")
-            print(f"indicating that the rule elicitation co-varies {overall_proportion:.2%} of the time with changes of categorizations.")
+            print(f"indicating that the rule elicitation co-varies {overall_co_flip_proportion:.2%} of the time with changes of categorizations.")
+            print(f"Out of the co-flips, {int(total_consistencies)} had consistent rules and categorizations,")
+            print(f"resulting in a consistency rate of {overall_consistency_proportion:.2%} among co-flips.")
         else:
             print(f"No categorization flips occurred for {rule_name}.")
     
@@ -458,7 +486,23 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             plt.yticks(ticks=range(num_layers))
             plt.tight_layout()
             # Save the heatmap with an informative name
-            filename = f"heatmaps/{rule_name}_{component}.png"
+            filename = f"heatmaps/{rule_name}_{component}_co_flip.png"
             plt.savefig(filename)
             plt.close()
-            print(f"Heatmap saved as {filename}")
+            print(f"Co-flip heatmap saved as {filename}")
+            
+            # Plot the consistency proportions heatmap
+            plt.figure(figsize=(15, 6))
+            plt.imshow(consistency_proportions[comp_idx], aspect='auto', cmap='plasma')
+            plt.colorbar(label='Proportion of Consistent Co-Flips')
+            plt.xlabel('Token Position')
+            plt.ylabel('Layer')
+            plt.title(f'{rule_name}: Consistency of Co-Flips\n{component.capitalize()} Component')
+            plt.xticks(ticks=range(num_positions), labels=position_names, rotation=90, fontsize=6)
+            plt.yticks(ticks=range(num_layers))
+            plt.tight_layout()
+            # Save the heatmap with an informative name
+            filename = f"heatmaps/{rule_name}_{component}_consistency.png"
+            plt.savefig(filename)
+            plt.close()
+            print(f"Consistency heatmap saved as {filename}")
