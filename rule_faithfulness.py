@@ -144,14 +144,11 @@ def compare_rules(rule1, rule2):
 # Total number of layers in the model
 num_layers = model.config.n_layer
 
-# Sliding window parameters
-window_size = 3  # Number of layers in each window
-step_size = 1    # Shift the window by one layer each time
-layer_indices = list(range(num_layers))
-num_windows = (num_layers - window_size) // step_size + 1
+# Components to intervene on
+components = ['residual', 'mlp_activation', 'attention_output']
 
 # Initialize results storage
-intervention_counts = np.zeros(num_windows)
+intervention_counts = np.zeros((len(components), num_layers))
 total_runs = 0
 
 # Parameters for the experiment
@@ -200,14 +197,24 @@ for rule_desc in tqdm(rule_descriptions, desc="Processing Rules"):
                 seed = random.randint(0, 10000)
                 set_seed(seed)
                 activations_correct = {}
-                # Register hooks on all layers
+                # Register hooks on all layers and components
                 handles = []
                 for layer_num in range(num_layers):
                     layer = model.transformer.h[layer_num]
-                    handle = layer.register_forward_hook(
-                        lambda module, inp, outp, layer_num=layer_num: activations_correct.setdefault(layer_num, outp.detach())
-                    )
-                    handles.append(handle)
+                    for component in components:
+                        if component == 'residual':
+                            handle = layer.register_forward_hook(
+                                lambda module, inp, outp, layer_num=layer_num, comp=component: activations_correct.setdefault((comp, layer_num), outp.detach())
+                            )
+                        elif component == 'mlp_activation':
+                            handle = layer.mlp.register_forward_hook(
+                                lambda module, inp, outp, layer_num=layer_num, comp=component: activations_correct.setdefault((comp, layer_num), outp.detach())
+                            )
+                        elif component == 'attention_output':
+                            handle = layer.attn.register_forward_hook(
+                                lambda module, inp, outp, layer_num=layer_num, comp=component: activations_correct.setdefault((comp, layer_num), outp.detach())
+                            )
+                        handles.append(handle)
                 # Generate output
                 output_sequences = model.generate(
                     input_ids=inputs['input_ids'],
@@ -233,14 +240,24 @@ for rule_desc in tqdm(rule_descriptions, desc="Processing Rules"):
                 seed = random.randint(0, 10000)
                 set_seed(seed)
                 activations_incorrect = {}
-                # Register hooks on all layers
+                # Register hooks on all layers and components
                 handles = []
                 for layer_num in range(num_layers):
                     layer = model.transformer.h[layer_num]
-                    handle = layer.register_forward_hook(
-                        lambda module, inp, outp, layer_num=layer_num: activations_incorrect.setdefault(layer_num, outp.detach())
-                    )
-                    handles.append(handle)
+                    for component in components:
+                        if component == 'residual':
+                            handle = layer.register_forward_hook(
+                                lambda module, inp, outp, layer_num=layer_num, comp=component: activations_incorrect.setdefault((comp, layer_num), outp.detach())
+                            )
+                        elif component == 'mlp_activation':
+                            handle = layer.mlp.register_forward_hook(
+                                lambda module, inp, outp, layer_num=layer_num, comp=component: activations_incorrect.setdefault((comp, layer_num), outp.detach())
+                            )
+                        elif component == 'attention_output':
+                            handle = layer.attn.register_forward_hook(
+                                lambda module, inp, outp, layer_num=layer_num, comp=component: activations_incorrect.setdefault((comp, layer_num), outp.detach())
+                            )
+                        handles.append(handle)
                 # Generate output
                 output_sequences = model.generate(
                     input_ids=inputs['input_ids'],
@@ -270,75 +287,75 @@ for rule_desc in tqdm(rule_descriptions, desc="Processing Rules"):
             label_pos_correct = inputs['input_ids'].shape[1]  # Position after the prompt
             label_pos_incorrect = label_pos_correct
 
-            # Perform interventions using sliding windows
-            for window_idx, window_start in enumerate(range(0, num_layers - window_size + 1, step_size)):
-                window_layers = layer_indices[window_start:window_start + window_size]
-                representations = [
-                    RepresentationConfig(
-                        layer=layer_num,
-                        component="residual",
-                    )
-                    for layer_num in window_layers
-                ]
-                intervention_config = IntervenableConfig(
-                    representations=representations,
-                    intervention_types=VanillaIntervention,
-                )
-
-                # Initialize the IntervenableModel
-                intervenable_model = IntervenableModel(intervention_config, model)
-
-                # Prepare unit_locations for swapping activations at the label position for each layer
-                unit_locations = {
-                    "sources->base": (
-                        [[label_pos_incorrect]] * len(window_layers),  # Positions in source
-                        [[label_pos_correct]] * len(window_layers),    # Positions in base
-                    )
-                }
-
-                # Collect activations for the layers in the window
-                base_activations = {layer: correct_run['activations'][layer] for layer in window_layers}
-                source_activations = {layer: incorrect_run['activations'][layer] for layer in window_layers}
-
-                # Run the intervention
-                with torch.no_grad():
-                    _, intervened_outputs = intervenable_model(
-                        base=inputs,
-                        sources=inputs,
-                        activations={
-                            'base': base_activations,
-                            'sources': source_activations,
-                        },
-                        unit_locations=unit_locations,
-                        max_length=inputs['input_ids'].shape[1] + 100,
-                        do_sample=False,  # Keep deterministic to isolate the effect of intervention
-                        temperature=0.7,
-                        pad_token_id=tokenizer.eos_token_id,
+            # Perform interventions over components and layers
+            for comp_idx, component in enumerate(components):
+                for layer_num in range(num_layers):
+                    # Create intervention configuration for the current component and layer
+                    intervention_config = IntervenableConfig(
+                        representations=[
+                            RepresentationConfig(
+                                layer=layer_num,
+                                component=component,
+                            )
+                        ],
+                        intervention_types=VanillaIntervention,
                     )
 
-                # Decode the intervened output
-                intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
+                    # Initialize the IntervenableModel
+                    intervenable_model = IntervenableModel(intervention_config, model)
 
-                # Extract and compare the rule
-                rule_intervened = extract_rule(intervened_text)
-                similarity_intervened = compare_rules(rule_intervened, rule_desc)
+                    # Prepare unit_locations for swapping activations at the label position
+                    unit_locations = {
+                        "sources->base": (
+                            [[label_pos_incorrect]],  # Position in source
+                            [[label_pos_correct]],    # Position in base
+                        )
+                    }
 
-                # Record the result
-                if not similarity_intervened:
-                    intervention_counts[window_idx] += 1
+                    # Collect activations for the component and layer
+                    key = (component, layer_num)
+                    base_activations = {key: correct_run['activations'][key]}
+                    source_activations = {key: incorrect_run['activations'][key]}
+
+                    # Run the intervention
+                    with torch.no_grad():
+                        _, intervened_outputs = intervenable_model(
+                            base=inputs,
+                            sources=inputs,
+                            activations={
+                                'base': base_activations,
+                                'sources': source_activations,
+                            },
+                            unit_locations=unit_locations,
+                            max_length=inputs['input_ids'].shape[1] + 100,
+                            do_sample=False,  # Keep deterministic to isolate the effect of intervention
+                            temperature=0.7,
+                            pad_token_id=tokenizer.eos_token_id,
+                        )
+
+                    # Decode the intervened output
+                    intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
+
+                    # Extract and compare the rule
+                    rule_intervened = extract_rule(intervened_text)
+                    similarity_intervened = compare_rules(rule_intervened, rule_desc)
+
+                    # Record the result
+                    if not similarity_intervened:
+                        intervention_counts[comp_idx, layer_num] += 1
 
             total_runs += 1  # Increment total runs for each test object
 
-# After processing all prompts and test objects, calculate the proportion
+# After processing all prompts and test objects, calculate the proportions
 intervention_proportions = intervention_counts / total_runs
 
-# Plot the results
-window_centers = [window_start + window_size // 2 for window_start in range(0, num_layers - window_size + 1, step_size)]
-
-plt.figure(figsize=(12, 6))
-plt.bar(window_centers, intervention_proportions, width=step_size)
-plt.xlabel('Layer')
-plt.ylabel('Proportion of Rule Changes')
-plt.title(f'Effect of Swapping Activations over Windows (size={window_size}) on Rule Elicitation')
-plt.xticks(window_centers)
-plt.show()
+# Plot the results for each component
+layers = np.arange(num_layers)
+for comp_idx, component in enumerate(components):
+    plt.figure(figsize=(12, 6))
+    plt.bar(layers, intervention_proportions[comp_idx])
+    plt.xlabel('Layer')
+    plt.ylabel('Proportion of Rule Changes')
+    plt.title(f'Effect of Swapping {component} Activations on Rule Elicitation')
+    plt.xticks(layers)
+    plt.show()
