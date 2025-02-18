@@ -3,7 +3,7 @@
 Rule elicitation faithfulness experiment: Do rule elicitations and inferences come from the same underlying representation?
 
 Objective:
-Investigate whether rule elicitations and categorizations made by a language model originate from the same underlying representations. Specifically, determine if altering the model's representation of the categorization decision affects the subsequent rule elicitation, thereby testing the faithfulness of the rule explanation.
+Investigate whether rule elicitation and categorization made by a language model originate from the same underlying representations. Specifically, determine if altering the model's internal representations at various token positions affects both the categorization decision and the subsequent rule elicitation, thereby testing the faithfulness of the rule explanation.
 
 Background:
 Inspired by the activation patching method used in the Space Needle example from the Pyvene paper, we aim to explore whether similar interventions can reveal a causal relationship between the model's categorization decisions and its rule elicitations.
@@ -31,15 +31,14 @@ Variability: Use random seeds and temperature adjustments to introduce variabili
 Goal: Obtain a sufficient number of correct and incorrect runs (e.g., 3 each per rule) to create multiple combinations for intervention.
 Activation Patching (Intervention):
 
-Intervention Points: Intervene across multiple layers and token positions, including:
-Position where the model generates the label for the test object.
-Position where the model starts the rule explanation.
-Swapping Activations: Swap activations from incorrect runs into correct runs at specified layers and positions.
+Intervention Points: Intervene across multiple layers and all token positions in the prompt, including:
+All tokens in the input prompt, to comprehensively assess the influence of each position.
+Swapping Activations: Swap activations from incorrect runs into correct runs at specified layers and token positions.
 Combining Runs: Pair each correct run with each incorrect run, increasing data points per analysis (e.g., 3 correct × 3 incorrect = 9 combinations per rule).
 Analyzing the Results:
 
-Assessment: After interventions, observe whether swapping the categorization activations leads to changes in the rule elicitation.
-Co-Variation Analysis: For each rule, calculate the proportion of interventions where a change in categorization co-occurs with a change in the rule explanation.
+Assessment: After interventions, observe whether changes in internal representations at various positions lead to changes in both the categorization and the rule elicitation.
+Co-Variation Analysis: For each intervention, calculate the proportion of times where a change in categorization co-occurs with a change in the rule explanation.
 Aggregate Statistics: Record the total number of interventions resulting in categorization changes and the number where the rule also changed, calculating the percentage of co-variation.
 Visualization: Generate heatmaps for each component (residual, MLP activation, attention output) to visualize the proportion of co-variations across layers and token positions.
 Key Design Decisions:
@@ -51,6 +50,10 @@ Facilitates comparison of co-variation patterns between different rules.
 Standardized Prompts and Token Positions:
 
 Ensures consistency in the input, which is crucial for meaningful interventions and accurate mapping of token positions.
+Intervening Across All Token Positions:
+
+Provides a comprehensive analysis of how different parts of the input affect both the model's decision and its explanation.
+Aligns with the methodology used in the Space Needle example, allowing us to uncover long-range dependencies and complex interactions within the model.
 Collecting Multiple Runs for Data Robustness:
 
 Increases the reliability of results by enhancing statistical significance.
