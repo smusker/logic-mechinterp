@@ -3,19 +3,20 @@
 Rule elicitation faithfulness experiment: Do rule elicitations and inferences come from the same underlying representation?
 
 Objective:
-
-Investigate whether rule elicitations and categorizations made by a language model come from the same underlying representations. Specifically, determine if changing the model's representation of the categorization decision affects the subsequent rule elicitation, thereby testing the faithfulness of the rule explanation.
+Investigate whether rule elicitations and categorizations made by a language model originate from the same underlying representations. Specifically, determine if altering the model's representation of the categorization decision affects the subsequent rule elicitation, thereby testing the faithfulness of the rule explanation.
 
 Background:
-
-In the Space Needle example from the Pyvene paper, activation patching (intervention) is used to identify where specific factual information is stored within a language model by swapping activations between runs. Inspired by this method, we aim to explore whether similar interventions can reveal a causal relationship between the model's categorization decisions and its rule elicitations.
+Inspired by the activation patching method used in the Space Needle example from the Pyvene paper, we aim to explore whether similar interventions can reveal a causal relationship between the model's categorization decisions and its rule elicitations.
 
 Experimental Design:
 
-Single Rule Focus:
+Multiple Rules Sequentially:
 
-Simplification: We focus on one rule at a time to ensure prompt standardization and consistent token positions across runs.
-Example Rule: "An object is labeled 'True' if it is BLU or a REC."
+Rules Tested:
+"An object is labeled 'True' if it is BLU or a REC."
+"An object is labeled 'True' if it is not a CIR."
+"An object is labeled 'True' if it is RED and not an SQR."
+Focusing on one rule at a time ensures prompt standardization and consistent token positions across runs.
 Standardized Prompts:
 
 Fixed Structure: Prompts follow a consistent format with fixed positions for object descriptions and labels.
@@ -27,39 +28,33 @@ Collecting Multiple Runs:
 Correct Runs: Generate multiple runs where the model correctly categorizes the test object and provides the correct rule explanation.
 Incorrect Runs: Generate multiple runs where the model incorrectly categorizes the test object and provides an incorrect rule explanation.
 Variability: Use random seeds and temperature adjustments to introduce variability in the model's outputs.
-Goal: Obtain a sufficient number of correct and incorrect runs (e.g., 3 each) to create multiple combinations for intervention.
+Goal: Obtain a sufficient number of correct and incorrect runs (e.g., 3 each per rule) to create multiple combinations for intervention.
 Activation Patching (Intervention):
 
 Intervention Points: Intervene across multiple layers and token positions, including:
-Positions of example labels in the prompt.
-Positions corresponding to the test object's size, color, and shape attributes.
 Position where the model generates the label for the test object.
 Position where the model starts the rule explanation.
 Swapping Activations: Swap activations from incorrect runs into correct runs at specified layers and positions.
-Combining Runs: Create combinations by pairing each correct run with each incorrect run, increasing data points per analysis (e.g., 3 correct × 3 incorrect = 9 combinations).
+Combining Runs: Pair each correct run with each incorrect run, increasing data points per analysis (e.g., 3 correct × 3 incorrect = 9 combinations per rule).
 Analyzing the Results:
 
 Assessment: After interventions, observe whether swapping the categorization activations leads to changes in the rule elicitation.
-Faithfulness Indicator: If the rule explanation changes correspondingly with the categorization decision, it suggests the rule elicitation is based on the same underlying representations, indicating faithfulness.
-Visualization: Generate heatmaps for each component (residual, MLP activation, attention output) to visualize the proportion of interventions that caused a change in the rule elicitation across layers and token positions.
+Co-Variation Analysis: For each rule, calculate the proportion of interventions where a change in categorization co-occurs with a change in the rule explanation.
+Aggregate Statistics: Record the total number of interventions resulting in categorization changes and the number where the rule also changed, calculating the percentage of co-variation.
+Visualization: Generate heatmaps for each component (residual, MLP activation, attention output) to visualize the proportion of co-variations across layers and token positions.
 Key Design Decisions:
 
-Focusing on One Rule at a Time:
+Sequential Testing of Multiple Rules:
 
-Reasoning: Simplifies prompt standardization and ensures consistent token positions, which is crucial for meaningful interventions across token positions.
-Advantage: Allows for precise control over variables and reduces complexity introduced by multiple simultaneous rules.
+Allows exploration of the model's behavior across different logical constructs.
+Facilitates comparison of co-variation patterns between different rules.
 Standardized Prompts and Token Positions:
 
-Consistency: Maintains fixed positions for object descriptions, labels, and other key tokens in the prompt.
-Abbreviations and Formatting: Use of standardized abbreviations and fixed-format object descriptions ensures consistent tokenization and alignment across runs.
+Ensures consistency in the input, which is crucial for meaningful interventions and accurate mapping of token positions.
 Collecting Multiple Runs for Data Robustness:
 
-Increased Data Points: Gathering multiple correct and incorrect runs allows for more combinations of interventions, enhancing statistical significance and reliability of results.
-Variability Control: Random seeds and temperature variations introduce necessary variability without altering the standardized prompt.
-Intervening Across Layers and Token Positions:
-
-Comprehensive Analysis: Intervening at multiple layers and positions helps identify where the model's categorization decision and rule elicitation are most closely linked.
-Alignment with Space Needle Method: Mirrors the approach used in the Space Needle example, facilitating a deeper understanding of the causal relationships within the model.
+Increases the reliability of results by enhancing statistical significance.
+Variability control through random seeds and temperature settings provides necessary diversity in model outputs without altering the prompt structure.
 
 **********************************//////////////////////******************************************
 
