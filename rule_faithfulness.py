@@ -12,8 +12,8 @@ from pyvene import (
     RepresentationConfig,
     VanillaIntervention,
 )
-from pyvene import create_gpt2  # Replace with appropriate function if using a different model
-from transformers import set_seed
+# Replace with appropriate imports if using a different model
+from transformers import GPT2Tokenizer, GPT2LMHeadModel, set_seed
 import numpy as np
 import random
 from tqdm import tqdm
@@ -23,8 +23,10 @@ import matplotlib.pyplot as plt
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the model and tokenizer
-# Replace 'gpt2' with your capable model (ensure it has the same architecture assumptions)
-config, tokenizer, model = create_gpt2(name='gpt2')
+# Replace 'gpt2' with a capable model that suits your needs
+tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+tokenizer.pad_token = tokenizer.eos_token  # Ensure padding token exists
+model = GPT2LMHeadModel.from_pretrained('gpt2')
 model.to(device)
 model.eval()
 
@@ -32,25 +34,13 @@ model.eval()
 random.seed(42)
 torch.manual_seed(42)
 
-# Define multiple rules and labeling functions
-rule_descriptions = [
-    "An object is labeled 'True' if it is BLU or a REC.",
-    "An object is labeled 'True' if it is GRN and S.",
-    "An object is labeled 'True' if it is not a CIR.",
-    "An object is labeled 'True' if it is YEL and L.",
-    "An object is labeled 'True' if it is RED or a TRI.",
-    "An object is labeled 'True' if it is BLU and not a SQR.",
-    "An object is labeled 'True' if it is not GRN or is L.",
-    "An object is labeled 'True' if it is S and not RED.",
-    "An object is labeled 'True' if it is a CIR or a REC.",
-    "An object is labeled 'True' if it is not YEL and not S.",
-    # Add more rules as needed
-]
-
 # Abbreviations for sizes, colors, and shapes
 sizes = ['S', 'M', 'L']       # Small, Medium, Large
 colors = ['BLU', 'GRN', 'YEL', 'RED']  # Blue, Green, Yellow, Red
 shapes = ['CIR', 'TRI', 'REC', 'SQR']  # Circle, Triangle, Rectangle, Square
+
+# Define a single rule and its labeling function
+rule_description = "An object is labeled 'True' if it is BLU or a REC."
 
 def label_object(description, rule_desc):
     # Simplified parsing based on the rule description
@@ -63,43 +53,8 @@ def label_object(description, rule_desc):
         is_blu = 'BLU' == color
         is_rec = 'REC' == shape
         return 'True' if is_blu or is_rec else 'False'
-    elif "GRN and S" in rule_desc:
-        is_grn = 'GRN' == color
-        is_s = 'S' == size
-        return 'True' if is_grn and is_s else 'False'
-    elif "not a CIR" in rule_desc:
-        is_cir = 'CIR' == shape
-        return 'False' if is_cir else 'True'
-    elif "YEL and L" in rule_desc:
-        is_yel = 'YEL' == color
-        is_l = 'L' == size
-        return 'True' if is_yel and is_l else 'False'
-    elif "RED or a TRI" in rule_desc:
-        is_red = 'RED' == color
-        is_tri = 'TRI' == shape
-        return 'True' if is_red or is_tri else 'False'
-    elif "BLU and not a SQR" in rule_desc:
-        is_blu = 'BLU' == color
-        is_sqr = 'SQR' == shape
-        return 'True' if is_blu and not is_sqr else 'False'
-    elif "not GRN or is L" in rule_desc:
-        is_grn = 'GRN' == color
-        is_l = 'L' == size
-        return 'True' if not is_grn or is_l else 'False'
-    elif "S and not RED" in rule_desc:
-        is_s = 'S' == size
-        is_red = 'RED' == color
-        return 'True' if is_s and not is_red else 'False'
-    elif "a CIR or a REC" in rule_desc:
-        is_cir = 'CIR' == shape
-        is_rec = 'REC' == shape
-        return 'True' if is_cir or is_rec else 'False'
-    elif "not YEL and not S" in rule_desc:
-        is_yel = 'YEL' == color
-        is_s = 'S' == size
-        return 'True' if not is_yel and not is_s else 'False'
     else:
-        return 'False'
+        return 'False'  # Default fallback
 
 def generate_random_object():
     size = random.choice(sizes)
@@ -134,7 +89,7 @@ def extract_rule(output_text):
     start_phrase = "Based on your examples, I've learned that"
     start_idx = output_text.find(start_phrase)
     if start_idx != -1:
-        return output_text[start_idx:]
+        return output_text[start_idx:].strip()
     else:
         return ""
 
@@ -179,27 +134,22 @@ def generate_prompt_and_get_token_positions(rule_desc):
     token_positions = {}
     
     # Find positions of labels ('True', 'False') in the examples
-    label_tokens = ['True', 'False']
-    label_indices = []
+    label_positions = []
     current_pos = 0
     for example in examples[:5]:
-        # Find the position of the label token
         label = example.split(' -> ')[1]
-        # Build the search string
         search_string = f"-> {label}"
-        # Tokenize the search string
         search_tokens = tokenizer.tokenize(search_string)
-        # Find the index of the first occurrence starting from current_pos
         try:
             idx = tokenized_prompt.index(search_tokens[0], current_pos)
             label_idx = idx + len(search_tokens) - 1  # Position of the label token
-            label_indices.append(label_idx)
+            label_positions.append(label_idx)
             current_pos = label_idx + 1
         except ValueError:
             continue
 
-    # Position of the test object's label (which we need to predict)
-    test_object_label_pos = len(tokenized_prompt)  # Since the model will generate this
+    # Position of the test object's label (to be generated)
+    label_token_position = len(tokenized_prompt)
 
     # Positions of the test object's attributes
     test_object_tokens = tokenizer.tokenize(test_object_line)
@@ -209,16 +159,17 @@ def generate_prompt_and_get_token_positions(rule_desc):
     color_token = 'Color='
     shape_token = 'Shape='
     size_idx = tokenized_prompt.index(size_token, test_object_token_start)
-    color_idx = tokenized_prompt.index(color_token, size_idx + 1)
-    shape_idx = tokenized_prompt.index(shape_token, color_idx + 1)
+    color_idx = tokenizer.tokenize('=')[0]
+    color_idx = size_idx + 2  # Assuming fixed positions
+    shape_idx = size_idx + 4  # Assuming fixed positions
 
     token_positions = {
-        'example_label_positions': label_indices,      # Positions of the labels in the examples
-        'test_object_size': size_idx,                  # Position of 'Size=' in test object
-        'test_object_color': color_idx,                # Position of 'Color=' in test object
-        'test_object_shape': shape_idx,                # Position of 'Shape=' in test object
-        'label_token': len(tokenized_prompt),          # Position where the model will generate the label
-        'rule_start': len(tokenized_prompt) + 1,       # Position where the model will start the rule explanation
+        'example_label_positions': label_positions,      # Positions of labels in examples
+        'test_object_size': size_idx + 1,                # Position of size value in test object
+        'test_object_color': size_idx + 3,               # Position of color value in test object
+        'test_object_shape': size_idx + 5,               # Position of shape value in test object
+        'label_token': label_token_position,             # Position where the model will generate the label
+        'rule_start': label_token_position + 1,          # Position where the rule explanation starts
     }
     
     return prompt, inputs, token_positions, test_object_line
@@ -229,208 +180,215 @@ num_layers = model.config.n_layer
 # Components to intervene on
 components = ['residual', 'mlp_activation', 'attention_output']
 
+# Positions to intervene on (we'll determine these after tokenization)
+position_names = [
+    'Example_Label_1', 'Example_Label_2', 'Example_Label_3', 'Example_Label_4', 'Example_Label_5',
+    'Test_Object_Size', 'Test_Object_Color', 'Test_Object_Shape', 'Label_Token', 'Rule_Start'
+]
+
+num_positions = len(position_names)
+
 # Initialize results storage
-num_positions = 6  # Number of positions we're intervening on
 intervention_counts = np.zeros((len(components), num_layers, num_positions))
-total_runs = 0
+total_interventions = np.zeros((len(components), num_layers, num_positions))
 
-# Parameters for the experiment
-num_rules = len(rule_descriptions)
-num_prompts_per_rule = 5     # Number of prompts per rule
-max_attempts = 5             # Max attempts to find correct/incorrect runs per test object
+# Number of correct and incorrect runs to collect
+num_correct_runs = 3
+num_incorrect_runs = 3
 
-# Main experimental loop
-for rule_desc in tqdm(rule_descriptions, desc="Processing Rules"):
-    for prompt_idx in range(num_prompts_per_rule):
-        # Generate prompt and token positions
-        prompt, inputs, token_positions, test_object_line = generate_prompt_and_get_token_positions(rule_desc)
-        
-        # Generate correct and incorrect runs
-        correct_run = None
-        incorrect_run = None
+# Collect correct and incorrect runs
+correct_runs = []
+incorrect_runs = []
 
-        # Attempt to get a correct run
-        for attempt in range(max_attempts):
-            seed = random.randint(0, 10000)
-            set_seed(seed)
-            activations_correct = {}
-            # Register hooks on all layers and components
-            handles = []
-            for layer_num in range(num_layers):
-                layer = model.transformer.h[layer_num]
-                for component in components:
-                    if component == 'residual':
-                        handle = layer.register_forward_hook(
-                            lambda module, inp, outp, layer_num=layer_num, comp=component: activations_correct.setdefault((comp, layer_num), outp.detach())
+prompt, inputs, token_positions, test_object_line = generate_prompt_and_get_token_positions(rule_description)
+
+print("Prompt:")
+print(prompt)
+
+# List to keep track of seeds used
+used_seeds = set()
+
+# Function to capture activations with correct variable scoping
+def get_activation_capturer(activations_dict, key):
+    def capturer(module, input, output):
+        activations_dict[key] = output.detach()
+    return capturer
+
+# Collect correct runs
+attempts = 0
+while len(correct_runs) < num_correct_runs and attempts < 50:
+    seed = random.randint(0, 10000)
+    if seed in used_seeds:
+        continue
+    used_seeds.add(seed)
+    set_seed(seed)
+    activations = {}
+    handles = []
+    for layer_num in range(num_layers):
+        layer = model.transformer.h[layer_num]
+        for component in components:
+            key = (component, layer_num)
+            if component == 'residual':
+                handle = layer.register_forward_hook(get_activation_capturer(activations, key))
+            elif component == 'mlp_activation':
+                handle = layer.mlp.register_forward_hook(get_activation_capturer(activations, key))
+            elif component == 'attention_output':
+                handle = layer.attn.register_forward_hook(get_activation_capturer(activations, key))
+            handles.append(handle)
+    # Generate output
+    output_sequences = model.generate(
+        input_ids=inputs['input_ids'],
+        max_length=inputs['input_ids'].shape[1] + 50,
+        do_sample=True,
+        temperature=0.7,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+    # Remove hooks
+    for handle in handles:
+        handle.remove()
+    output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
+    assigned_label = label_test_object_in_output(output_text, test_object_line)
+    true_label = label_object(test_object_line, rule_description)
+    if assigned_label == true_label:
+        correct_runs.append({
+            'text': output_text,
+            'activations': activations,
+        })
+    attempts += 1
+
+# Collect incorrect runs
+attempts = 0
+while len(incorrect_runs) < num_incorrect_runs and attempts < 50:
+    seed = random.randint(0, 10000)
+    if seed in used_seeds:
+        continue
+    used_seeds.add(seed)
+    set_seed(seed)
+    activations = {}
+    handles = []
+    for layer_num in range(num_layers):
+        layer = model.transformer.h[layer_num]
+        for component in components:
+            key = (component, layer_num)
+            if component == 'residual':
+                handle = layer.register_forward_hook(get_activation_capturer(activations, key))
+            elif component == 'mlp_activation':
+                handle = layer.mlp.register_forward_hook(get_activation_capturer(activations, key))
+            elif component == 'attention_output':
+                handle = layer.attn.register_forward_hook(get_activation_capturer(activations, key))
+            handles.append(handle)
+    # Generate output
+    output_sequences = model.generate(
+        input_ids=inputs['input_ids'],
+        max_length=inputs['input_ids'].shape[1] + 50,
+        do_sample=True,
+        temperature=1.0,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+    # Remove hooks
+    for handle in handles:
+        handle.remove()
+    output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
+    assigned_label = label_test_object_in_output(output_text, test_object_line)
+    true_label = label_object(test_object_line, rule_description)
+    if assigned_label is not None and assigned_label != true_label:
+        incorrect_runs.append({
+            'text': output_text,
+            'activations': activations,
+        })
+    attempts += 1
+
+# Ensure we have enough runs
+if len(correct_runs) < num_correct_runs or len(incorrect_runs) < num_incorrect_runs:
+    print("Not enough correct and incorrect runs were collected.")
+else:
+    # Create combinations of correct and incorrect runs
+    total_runs = 0
+    for correct_run in correct_runs:
+        for incorrect_run in incorrect_runs:
+            # Perform interventions over components, layers, and positions
+            for comp_idx, component in enumerate(components):
+                for layer_num in range(num_layers):
+                    for pos_idx, position_name in enumerate(position_names):
+                        # Positions to intervene on
+                        if position_name.startswith('Example_Label'):
+                            # Get the index from the position name
+                            label_idx = int(position_name.split('_')[-1]) - 1
+                            token_pos = token_positions['example_label_positions'][label_idx]
+                        else:
+                            token_pos = token_positions[position_name.lower()]
+                        # Create intervention configuration
+                        intervention_config = IntervenableConfig(
+                            representations=[
+                                RepresentationConfig(
+                                    layer=layer_num,
+                                    component=component,
+                                )
+                            ],
+                            intervention_types=VanillaIntervention,
                         )
-                    elif component == 'mlp_activation':
-                        handle = layer.mlp.register_forward_hook(
-                            lambda module, inp, outp, layer_num=layer_num, comp=component: activations_correct.setdefault((comp, layer_num), outp.detach())
-                        )
-                    elif component == 'attention_output':
-                        handle = layer.attn.register_forward_hook(
-                            lambda module, inp, outp, layer_num=layer_num, comp=component: activations_correct.setdefault((comp, layer_num), outp.detach())
-                        )
-                    handles.append(handle)
-            # Generate output
-            output_sequences = model.generate(
-                input_ids=inputs['input_ids'],
-                max_length=inputs['input_ids'].shape[1] + 50,
-                do_sample=True,
-                temperature=0.7,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-            # Remove hooks
-            for handle in handles:
-                handle.remove()
-            output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
-            assigned_label = label_test_object_in_output(output_text, test_object_line)
-            true_label = label_object(test_object_line, rule_desc)
-            if assigned_label == true_label:
-                correct_run = {
-                    'text': output_text,
-                    'activations': activations_correct,
-                }
-                break
 
-        # Attempt to get an incorrect run
-        for attempt in range(max_attempts):
-            seed = random.randint(0, 10000)
-            set_seed(seed)
-            activations_incorrect = {}
-            # Register hooks on all layers and components
-            handles = []
-            for layer_num in range(num_layers):
-                layer = model.transformer.h[layer_num]
-                for component in components:
-                    if component == 'residual':
-                        handle = layer.register_forward_hook(
-                            lambda module, inp, outp, layer_num=layer_num, comp=component: activations_incorrect.setdefault((comp, layer_num), outp.detach())
-                        )
-                    elif component == 'mlp_activation':
-                        handle = layer.mlp.register_forward_hook(
-                            lambda module, inp, outp, layer_num=layer_num, comp=component: activations_incorrect.setdefault((comp, layer_num), outp.detach())
-                        )
-                    elif component == 'attention_output':
-                        handle = layer.attn.register_forward_hook(
-                            lambda module, inp, outp, layer_num=layer_num, comp=component: activations_incorrect.setdefault((comp, layer_num), outp.detach())
-                        )
-                    handles.append(handle)
-            # Generate output
-            output_sequences = model.generate(
-                input_ids=inputs['input_ids'],
-                max_length=inputs['input_ids'].shape[1] + 50,
-                do_sample=True,
-                temperature=1.0,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-            # Remove hooks
-            for handle in handles:
-                handle.remove()
-            output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
-            assigned_label = label_test_object_in_output(output_text, test_object_line)
-            true_label = label_object(test_object_line, rule_desc)
-            if assigned_label and assigned_label != true_label:
-                incorrect_run = {
-                    'text': output_text,
-                    'activations': activations_incorrect,
-                }
-                break
+                        # Initialize the IntervenableModel
+                        intervenable_model = IntervenableModel(intervention_config, model)
 
-        # Proceed only if both runs are found
-        if not correct_run or not incorrect_run:
-            continue
-
-        # Positions to intervene on
-        positions = [
-            *token_positions['example_label_positions'],  # Positions of example labels
-            token_positions['test_object_size'],          # Test object size
-            token_positions['test_object_color'],         # Test object color
-            token_positions['test_object_shape'],         # Test object shape
-            token_positions['label_token'],               # Position where model generates label
-            token_positions['rule_start']                 # Position where model starts rule explanation
-        ]
-        position_names = [
-            'Example_Label_1', 'Example_Label_2', 'Example_Label_3', 'Example_Label_4', 'Example_Label_5',
-            'Test_Object_Size', 'Test_Object_Color', 'Test_Object_Shape', 'Label_Token', 'Rule_Start'
-        ]
-        num_positions = len(positions)
-
-        # Update intervention_counts to match num_positions
-        intervention_counts = np.zeros((len(components), num_layers, num_positions))
-
-        # Perform interventions over components, layers, and positions
-        for comp_idx, component in enumerate(components):
-            for layer_num in range(num_layers):
-                for pos_idx, token_pos in enumerate(positions):
-                    # Create intervention configuration for the current component, layer, and position
-                    intervention_config = IntervenableConfig(
-                        representations=[
-                            RepresentationConfig(
-                                layer=layer_num,
-                                component=component,
+                        # Prepare unit_locations for swapping activations at the token position
+                        unit_locations = {
+                            "sources->base": (
+                                [[token_pos]],  # Positions in source
+                                [[token_pos]],  # Positions in base
                             )
-                        ],
-                        intervention_types=VanillaIntervention,
-                    )
+                        }
 
-                    # Initialize the IntervenableModel
-                    intervenable_model = IntervenableModel(intervention_config, model)
+                        # Collect activations for the component and layer
+                        key = (component, layer_num)
+                        base_activations = {key: correct_run['activations'][key]}
+                        source_activations = {key: incorrect_run['activations'][key]}
 
-                    # Prepare unit_locations for swapping activations at the token position
-                    unit_locations = {
-                        "sources->base": (
-                            [[token_pos]],  # Positions in source
-                            [[token_pos]],  # Positions in base
-                        )
-                    }
+                        # Run the intervention
+                        with torch.no_grad():
+                            _, intervened_outputs = intervenable_model(
+                                base=inputs,
+                                sources=inputs,
+                                activations={
+                                    'base': base_activations,
+                                    'sources': source_activations,
+                                },
+                                unit_locations=unit_locations,
+                                max_length=inputs['input_ids'].shape[1] + 50,
+                                do_sample=False,  # Keep deterministic to isolate the effect of intervention
+                                temperature=0.7,
+                                pad_token_id=tokenizer.eos_token_id,
+                            )
 
-                    # Collect activations for the component and layer
-                    key = (component, layer_num)
-                    base_activations = {key: correct_run['activations'][key]}
-                    source_activations = {key: incorrect_run['activations'][key]}
+                        # Decode the intervened output
+                        intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
 
-                    # Run the intervention
-                    with torch.no_grad():
-                        _, intervened_outputs = intervenable_model(
-                            base=inputs,
-                            sources=inputs,
-                            activations={
-                                'base': base_activations,
-                                'sources': source_activations,
-                            },
-                            unit_locations=unit_locations,
-                            max_length=inputs['input_ids'].shape[1] + 50,
-                            do_sample=False,  # Keep deterministic to isolate the effect of intervention
-                            temperature=0.7,
-                            pad_token_id=tokenizer.eos_token_id,
-                        )
+                        # Extract and compare the rule
+                        rule_intervened = extract_rule(intervened_text)
+                        rule_correct = extract_rule(correct_run['text'])
+                        rule_incorrect = extract_rule(incorrect_run['text'])
 
-                    # Decode the intervened output
-                    intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
+                        # Compare intervened rule to the correct rule
+                        similarity_intervened = compare_rules(rule_intervened, rule_description)
 
-                    # Extract and compare the rule
-                    rule_intervened = extract_rule(intervened_text)
-                    similarity_intervened = compare_rules(rule_intervened, rule_desc)
+                        # Record the result
+                        total_interventions[comp_idx, layer_num, pos_idx] += 1
+                        if not similarity_intervened:
+                            intervention_counts[comp_idx, layer_num, pos_idx] += 1
+            total_runs += 1  # Count each intervention combination
 
-                    # Record the result
-                    if not similarity_intervened:
-                        intervention_counts[comp_idx, layer_num, pos_idx] += 1
+    # Calculate the proportions
+    intervention_proportions = np.divide(intervention_counts, total_interventions, out=np.zeros_like(intervention_counts), where=total_interventions!=0)
 
-        total_runs += 1  # Increment total runs
-
-# After processing all prompts and runs, calculate the proportions
-intervention_proportions = intervention_counts / total_runs
-
-# Plot the results for each component
-for comp_idx, component in enumerate(components):
-    plt.figure(figsize=(15, 6))
-    plt.imshow(intervention_proportions[comp_idx], aspect='auto', cmap='viridis')
-    plt.colorbar(label='Proportion of Rule Changes')
-    plt.xlabel('Token Position')
-    plt.ylabel('Layer')
-    plt.title(f'Effect of Swapping {component} Activations on Rule Elicitation')
-    plt.xticks(ticks=range(num_positions), labels=position_names, rotation=45)
-    plt.yticks(ticks=range(num_layers))
-    plt.tight_layout()
-    plt.show()
+    # Plot the results for each component
+    for comp_idx, component in enumerate(components):
+        plt.figure(figsize=(15, 6))
+        plt.imshow(intervention_proportions[comp_idx], aspect='auto', cmap='viridis')
+        plt.colorbar(label='Proportion of Rule Changes')
+        plt.xlabel('Token Position')
+        plt.ylabel('Layer')
+        plt.title(f'Effect of Swapping {component} Activations on Rule Elicitation')
+        plt.xticks(ticks=range(num_positions), labels=position_names, rotation=45, ha='right')
+        plt.yticks(ticks=range(num_layers))
+        plt.tight_layout()
+        plt.show()
