@@ -1,3 +1,6 @@
+import openai
+openai.api_key = "your-api-key-here"
+
 # Install Pyvene if not already installed
 try:
     import pyvene
@@ -134,12 +137,29 @@ def label_test_object_in_output(output_text, test_object):
 
 def compare_rules(rule1, rule2):
     """
-    Placeholder function to compare two rule descriptions.
-    Returns True if the rules are effectively the same, False otherwise.
-    Implement this function using an LLM API or semantic similarity measure.
+    Uses OpenAI's GPT-4 API to determine if two rules are equivalent in meaning.
     """
-    # Simplified comparison for demonstration
-    return rule1.strip().lower() == rule2.strip().lower()
+    prompt = (
+        "Here are a few examples of equivalent rules:\n"
+        "- 'An object is labeled True if it is blue or a rectangle'\n"
+        "- 'An object is labeled True if it is a rectangle or blue'\n"
+        "- 'All objects are True if they are a rectangle or if they are blue, False otherwise'\n\n"
+        "Now respond about these two rules."
+        f"Are the following two rules logically equivalent in meaning?\n\n"
+        f"Rule 1: {rule1}\n"
+        f"Rule 2: {rule2}\n\n"
+        "Please answer 'True' if they are equivalent and 'False' if they are not."
+    )
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "system", "content": "You are a helpful assistant skilled in logical reasoning."},
+                  {"role": "user", "content": prompt}],
+        temperature=0.0  # Make the response deterministic
+    )
+    
+    answer = response["choices"][0]["message"]["content"].strip().lower()
+    return answer == "true"
 
 # Total number of layers in the model
 num_layers = model.config.n_layer
