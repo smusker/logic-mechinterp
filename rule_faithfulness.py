@@ -23,7 +23,7 @@ import os
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the model and tokenizer
-# Replace 'gpt2' with a capable model that suits your needs
+# Replace 'gpt2' with a capable model that suits your needs (e.g., 'gpt2-xl')
 tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 tokenizer.pad_token = tokenizer.eos_token  # Ensure padding token exists
 model = GPT2LMHeadModel.from_pretrained('gpt2')
@@ -106,12 +106,13 @@ def extract_rule(output_text):
         return output_text[start_idx:].strip()
     else:
         return ""
-    
+
 def compare_rules(rule1, rule2):
     """
     Implement this function using an LLM API or semantic similarity measure.
     For now, we'll consider rules the same if they share significant keywords.
     """
+    # Simplistic comparison for demonstration purposes
     keywords1 = set(rule1.lower().split())
     keywords2 = set(rule2.lower().split())
     common_keywords = keywords1.intersection(keywords2)
@@ -171,12 +172,21 @@ def generate_prompt_and_get_token_positions(rule_desc):
     inputs = tokenizer(prompt, return_tensors='pt').to(device)
     tokenized_prompt = tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
 
-    # Get all token positions
-    position_names = [f'Token_{i}' for i in range(len(tokenized_prompt))]
-    num_positions = len(position_names)
+    return prompt, inputs, tokenized_prompt, test_object_line
+
+def get_output_token_positions(output_sequences, tokenized_prompt, max_new_tokens):
+    generated_ids = output_sequences[0][inputs['input_ids'].shape[1]:]
+    tokenized_output = tokenizer.convert_ids_to_tokens(generated_ids)
+
+    # We will only consider the first few output tokens (e.g., first 5 tokens)
+    output_tokens_to_include = 5  # Adjust as needed
+    tokenized_output = tokenized_output[:output_tokens_to_include]
+    tokens = tokenized_prompt + tokenized_output
+
+    position_names = [f'Token_{i}' for i in range(len(tokens))]
     token_positions = {name: i for i, name in enumerate(position_names)}
-    
-    return prompt, inputs, token_positions, position_names, test_object_line
+
+    return tokens, position_names, token_positions
 
 # Total number of layers in the model
 num_layers = model.config.n_layer
@@ -189,11 +199,8 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
     print(f"\n--- Processing {rule_name}: {rule_description} ---\n")
     
     # Initialize results storage for this rule
-    prompt, inputs, token_positions, position_names, test_object_line = generate_prompt_and_get_token_positions(rule_description)
-    num_positions = len(position_names)
-    co_flip_counts = np.zeros((len(components), num_layers, num_positions))
-    categorization_flip_counts = np.zeros((len(components), num_layers, num_positions))
-    
+    prompt, inputs, tokenized_prompt, test_object_line = generate_prompt_and_get_token_positions(rule_description)
+    max_new_tokens = 50  # Maximum number of tokens to generate
     print("Prompt:")
     print(prompt)
     
@@ -211,18 +218,13 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
     # Function to capture activations with correct variable scoping
     def get_activation_capturer(activations_dict, key):
         def capturer(module, input, output):
-            activations_dict[key] = output.detach()
+            if key not in activations_dict:
+                activations_dict[key] = []
+            activations_dict[key].append(output.detach())
         return capturer
     
-    # Collect correct runs
-    attempts = 0
-    while len(correct_runs) < num_correct_runs and attempts < 100:
-        seed = random.randint(0, 10000)
-        if seed in used_seeds:
-            continue
-        used_seeds.add(seed)
-        set_seed(seed)
-        activations = {}
+    # Function to register hooks
+    def register_hooks(activations):
         handles = []
         for layer_num in range(num_layers):
             layer = model.transformer.h[layer_num]
@@ -235,10 +237,22 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                 elif component == 'attention_output':
                     handle = layer.attn.register_forward_hook(get_activation_capturer(activations, key))
                 handles.append(handle)
+        return handles
+    
+    # Collect correct runs
+    attempts = 0
+    while len(correct_runs) < num_correct_runs and attempts < 100:
+        seed = random.randint(0, 10000)
+        if seed in used_seeds:
+            continue
+        used_seeds.add(seed)
+        set_seed(seed)
+        activations = {}
+        handles = register_hooks(activations)
         # Generate output
         output_sequences = model.generate(
             input_ids=inputs['input_ids'],
-            max_length=inputs['input_ids'].shape[1] + 50,
+            max_new_tokens=5,  # Generate only a few tokens to include the label and start of rule
             do_sample=True,
             temperature=0.7,
             pad_token_id=tokenizer.eos_token_id,
@@ -250,11 +264,17 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         assigned_label = label_test_object_in_output(output_text, test_object_line)
         true_label = label_object(test_object_line, rule_description)
         if assigned_label == true_label and assigned_label is not None:
+            # Get combined tokens and positions
+            tokens, position_names, token_positions = get_output_token_positions(output_sequences, tokenized_prompt, max_new_tokens)
             correct_runs.append({
                 'text': output_text,
                 'activations': activations,
                 'assigned_label': assigned_label,
                 'rule': extract_rule(output_text),
+                'tokens': tokens,
+                'position_names': position_names,
+                'token_positions': token_positions,
+                'output_sequences': output_sequences,
             })
         attempts += 1
     
@@ -267,22 +287,11 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         used_seeds.add(seed)
         set_seed(seed)
         activations = {}
-        handles = []
-        for layer_num in range(num_layers):
-            layer = model.transformer.h[layer_num]
-            for component in components:
-                key = (component, layer_num)
-                if component == 'residual':
-                    handle = layer.register_forward_hook(get_activation_capturer(activations, key))
-                elif component == 'mlp_activation':
-                    handle = layer.mlp.register_forward_hook(get_activation_capturer(activations, key))
-                elif component == 'attention_output':
-                    handle = layer.attn.register_forward_hook(get_activation_capturer(activations, key))
-                handles.append(handle)
+        handles = register_hooks(activations)
         # Generate output
         output_sequences = model.generate(
             input_ids=inputs['input_ids'],
-            max_length=inputs['input_ids'].shape[1] + 50,
+            max_new_tokens=5,  # Generate only a few tokens to include the label and start of rule
             do_sample=True,
             temperature=1.0,
             pad_token_id=tokenizer.eos_token_id,
@@ -294,11 +303,17 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         assigned_label = label_test_object_in_output(output_text, test_object_line)
         true_label = label_object(test_object_line, rule_description)
         if assigned_label is not None and assigned_label != true_label:
+            # Get combined tokens and positions
+            tokens, position_names, token_positions = get_output_token_positions(output_sequences, tokenized_prompt, max_new_tokens)
             incorrect_runs.append({
                 'text': output_text,
                 'activations': activations,
                 'assigned_label': assigned_label,
                 'rule': extract_rule(output_text),
+                'tokens': tokens,
+                'position_names': position_names,
+                'token_positions': token_positions,
+                'output_sequences': output_sequences,
             })
         attempts += 1
     
@@ -307,16 +322,36 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         print(f"Not enough correct and incorrect runs were collected for {rule_name}.")
         continue
     else:
+        # Use the token positions and names from the correct runs (assuming they are consistent)
+        position_names = correct_runs[0]['position_names']
+        token_positions = correct_runs[0]['token_positions']
+        num_positions = len(position_names)
+        
+        # Initialize results storage
+        co_flip_counts = np.zeros((len(components), num_layers, num_positions))
+        categorization_flip_counts = np.zeros((len(components), num_layers, num_positions))
+        
         # Create combinations of correct and incorrect runs
         total_cat_flips = 0
         total_co_flips = 0
         for correct_run in correct_runs:
             for incorrect_run in incorrect_runs:
+                # Ensure tokens and positions align
+                if correct_run['position_names'] != incorrect_run['position_names']:
+                    continue  # Skip if token positions don't align
+                
                 # Perform interventions over components, layers, and positions
                 for comp_idx, component in enumerate(components):
                     for layer_num in range(num_layers):
                         for pos_idx, position_name in enumerate(position_names):
                             token_pos = token_positions[position_name]
+                            # Collect activations for the component, layer, and token position
+                            key = (component, layer_num)
+                            # Check if activations are available for the required positions
+                            if len(correct_run['activations'][key]) <= token_pos or len(incorrect_run['activations'][key]) <= token_pos:
+                                continue  # Skip if activations are missing
+                            base_activation = correct_run['activations'][key][token_pos]
+                            source_activation = incorrect_run['activations'][key][token_pos]
                             
                             # Create intervention configuration
                             intervention_config = IntervenableConfig(
@@ -328,10 +363,10 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                 ],
                                 intervention_types=VanillaIntervention,
                             )
-
+    
                             # Initialize the IntervenableModel
                             intervenable_model = IntervenableModel(intervention_config, model)
-
+    
                             # Prepare unit_locations for swapping activations at the token position
                             unit_locations = {
                                 "sources->base": (
@@ -339,64 +374,69 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                     [[token_pos]],  # Positions in base
                                 )
                             }
-
-                            # Collect activations for the component and layer
-                            key = (component, layer_num)
-                            base_activations = {key: correct_run['activations'][key]}
-                            source_activations = {key: incorrect_run['activations'][key]}
-
+    
                             # Run the intervention
                             with torch.no_grad():
+                                # Create combined input_ids
+                                base_input_ids = torch.cat([inputs['input_ids'][0], correct_run['output_sequences'][0][inputs['input_ids'].shape[1]:]], dim=0).unsqueeze(0)
+                                sources_input_ids = torch.cat([inputs['input_ids'][0], incorrect_run['output_sequences'][0][inputs['input_ids'].shape[1]:]], dim=0).unsqueeze(0)
+                                
+                                # Ensure input_ids are the same length
+                                max_length = max(base_input_ids.shape[1], sources_input_ids.shape[1])
+                                base_input_ids = torch.nn.functional.pad(base_input_ids, (0, max_length - base_input_ids.shape[1]), value=tokenizer.pad_token_id)
+                                sources_input_ids = torch.nn.functional.pad(sources_input_ids, (0, max_length - sources_input_ids.shape[1]), value=tokenizer.pad_token_id)
+                                
+                                # Run the model
                                 _, intervened_outputs = intervenable_model(
-                                    base=inputs,
-                                    sources=inputs,
+                                    base={'input_ids': base_input_ids.to(device)},
+                                    sources={'input_ids': sources_input_ids.to(device)},
                                     activations={
-                                        'base': base_activations,
-                                        'sources': source_activations,
+                                        'base': {key: correct_run['activations'][key]},
+                                        'sources': {key: incorrect_run['activations'][key]},
                                     },
                                     unit_locations=unit_locations,
-                                    max_length=inputs['input_ids'].shape[1] + 50,
+                                    max_length=max_length,
                                     do_sample=False,  # Keep deterministic to isolate the effect of intervention
                                     temperature=0.7,
                                     pad_token_id=tokenizer.eos_token_id,
                                 )
-
+    
                             # Decode the intervened output
                             intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
-
+    
                             # Extract assigned label and rule from intervened output
                             assigned_label_intervened = label_test_object_in_output(intervened_text, test_object_line)
                             rule_intervened = extract_rule(intervened_text)
-
+    
                             # Compare to correct run
                             assigned_label_correct = correct_run['assigned_label']
                             rule_correct = correct_run['rule']
-
+    
                             # Check if categorization flipped
                             if assigned_label_intervened is None:
                                 continue  # Skip if label not found
                             categorization_flipped = (assigned_label_intervened != assigned_label_correct)
-
+    
                             if categorization_flipped:
                                 # Increment categorization flip count
                                 categorization_flip_counts[comp_idx, layer_num, pos_idx] += 1
                                 total_cat_flips += 1
-
+    
                                 # Check if rule also changed compared to correct run
                                 if rule_intervened == "":
                                     continue  # Skip if rule not found
                                 rule_changed = not compare_rules(rule_intervened, rule_correct)
-
+    
                                 if rule_changed:
                                     # Increment co-flip count
                                     co_flip_counts[comp_idx, layer_num, pos_idx] += 1
                                     total_co_flips += 1
-
+    
         # Calculate the proportions
         with np.errstate(divide='ignore', invalid='ignore'):
             co_flip_proportions = np.true_divide(co_flip_counts, categorization_flip_counts)
             co_flip_proportions[np.isnan(co_flip_proportions)] = 0  # Set NaNs to zero where there were no flips
-
+    
         # Aggregate Statistics
         if total_cat_flips > 0:
             overall_proportion = total_co_flips / total_cat_flips
@@ -405,7 +445,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             print(f"indicating that the rule elicitation co-varies {overall_proportion:.2%} of the time with changes of categorizations.")
         else:
             print(f"No categorization flips occurred for {rule_name}.")
-
+    
         # Plot the results for each component
         for comp_idx, component in enumerate(components):
             plt.figure(figsize=(15, 6))
