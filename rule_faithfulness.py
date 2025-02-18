@@ -1,31 +1,25 @@
-try:
-    import pyvene
-except ImportError:
-    !pip install git+https://github.com/stanfordnlp/pyvene.git
-    import pyvene
-# Import necessary modules
-import torch
-from pyvene import (
-    IntervenableModel,
-    IntervenableConfig,
-    VanillaIntervention,
-)
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, set_seed
+# Import the necessary libraries
 import random
+import torch
+from transformers import pipeline, set_seed
 from tqdm import tqdm
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# Load a capable model (e.g., OpenAI's GPT-3 via API, or use GPT-2 as a placeholder)
-# For this code, we will use GPT-2 for demonstration purposes.
-# Replace this with your capable model as needed.
-tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-tokenizer.pad_token = tokenizer.eos_token  # Ensure there is a pad token
-model = GPT2LMHeadModel.from_pretrained('gpt2')
-model.to(device)
-model.eval()
-# Set random seeds for reproducibility
+
+# Set the device and model ID
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model_id = "meta-llama/Llama-3.1-8B"
+
+# Create the text generation pipeline
+text_gen_pipeline = pipeline(
+    "text-generation",
+    model=model_id,
+    model_kwargs={"torch_dtype": torch.bfloat16},
+    device_map="auto"  # Automatically selects available device(s)
+)
+
+# Set the random seeds for reproducibility
 random.seed(42)
 torch.manual_seed(42)
+
 # Define the prompt generation function with fixed-length prompts
 def generate_fixed_prompt(include_rule=False):
     # Define fixed-length object descriptions
@@ -72,45 +66,46 @@ def generate_fixed_prompt(include_rule=False):
         prompt += f"{obj}\n"
     
     return prompt, abbr_objects, labels_correct, labels_incorrect
-# Function to get model output
+
+# Function to get model output using the pipeline
 def get_model_output(prompt, seed, temperature=0.7):
     set_seed(seed)
-    inputs = tokenizer(prompt, return_tensors='pt').to(device)
-    outputs = model.generate(
-        input_ids=inputs['input_ids'],
-        max_length=inputs['input_ids'].shape[1] + 50,  # Adjust as needed
-        temperature=temperature,
+    # Generate the text using the pipeline
+    output = text_gen_pipeline(
+        prompt,
+        max_length=250,  # Adjust as needed
         do_sample=True,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id
+        temperature=temperature
     )
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return generated_text
+    return output[0]['generated_text']
+
 # Generate the prompts
 prompt, objects, labels_correct, labels_incorrect = generate_fixed_prompt(include_rule=True)
+
 # Generate correct output
 seed_correct = 42
 output_correct = get_model_output(prompt, seed_correct)
+
 # Generate incorrect output
 seed_incorrect = 43
 output_incorrect = get_model_output(prompt, seed_incorrect)
+
 print("=== Correct Output ===")
 print(output_correct)
 print("\n=== Incorrect Output ===")
 print(output_incorrect)
+
 # Identify the positions to intervene (categorization tokens)
-# Tokenize the inputs and outputs
-inputs_correct = tokenizer(prompt, return_tensors='pt').to(device)
-inputs_incorrect = tokenizer(prompt, return_tensors='pt').to(device)
-# Tokenize the outputs
-output_tokens_correct = tokenizer.tokenize(output_correct)
-output_tokens_incorrect = tokenizer.tokenize(output_incorrect)
+# Tokenize the outputs (unnecessary for the pipeline, kept for alignment)
+output_tokens_correct = text_gen_pipeline.tokenizer.tokenize(output_correct)
+output_tokens_incorrect = text_gen_pipeline.tokenizer.tokenize(output_incorrect)
+
 # Find the positions of the labels in the outputs
 def find_label_positions(output_tokens, objects):
     label_positions = []
     for obj in objects:
         # Find the index of the object in the output tokens
-        obj_tokens = tokenizer.tokenize(obj)
+        obj_tokens = text_gen_pipeline.tokenizer.tokenize(obj)
         obj_str = ' '.join(obj_tokens)
         try:
             start_idx = output_tokens.index(obj_tokens[0])
@@ -127,15 +122,17 @@ def find_label_positions(output_tokens, objects):
         if label_idx < len(output_tokens):
             label_positions.append(label_idx)
     return label_positions
+
 label_positions_correct = find_label_positions(output_tokens_correct, objects)
 label_positions_incorrect = find_label_positions(output_tokens_incorrect, objects)
+
 # Ensure we have found the label positions
 if not label_positions_correct or not label_positions_incorrect:
     print("Could not find label positions in outputs.")
 else:
     # Now, set up the intervention using Pyvene
-    # We will swap the activations at the positions corresponding to the labels
-    # between the correct and incorrect outputs
+    # Note: Pyvene might need adaptation for Llama models
+
     # Create the intervention configuration
     # We will intervene on the 'residual' stream at all layers
     intervention_config = IntervenableConfig([
@@ -145,13 +142,16 @@ else:
             "intervention_type": VanillaIntervention
         }
     ])
+
     # Initialize the IntervenableModel
     intervenable_model = IntervenableModel(intervention_config, model)
+
     # Prepare inputs for Pyvene
-    base_inputs = tokenizer(prompt, return_tensors='pt').to(device)
-    source_inputs = tokenizer(prompt, return_tensors='pt').to(device)
-    base_outputs = tokenizer(output_correct, return_tensors='pt').to(device)
-    source_outputs = tokenizer(output_incorrect, return_tensors='pt').to(device)
+    base_inputs = text_gen_pipeline.tokenizer(prompt, return_tensors='pt').to(device)
+    source_inputs = text_gen_pipeline.tokenizer(prompt, return_tensors='pt').to(device)
+    base_outputs = text_gen_pipeline.tokenizer(output_correct, return_tensors='pt').to(device)
+    source_outputs = text_gen_pipeline.tokenizer(output_incorrect, return_tensors='pt').to(device)
+
     # Run the intervention
     with torch.no_grad():
         # The intervention swaps the activations from the source into the base
@@ -164,10 +164,13 @@ else:
             },
             max_length=base_inputs['input_ids'].shape[1] + 50  # Adjust as needed
         )
+
     # Decode the output
-    swapped_output = tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+    swapped_output = text_gen_pipeline.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
+
     print("\n=== Swapped Output ===")
     print(swapped_output)
+
     # Analyze the results
     print("\n=== Analysis ===")
     if swapped_output != output_correct:
