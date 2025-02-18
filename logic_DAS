@@ -1,0 +1,509 @@
+# Install required libraries if not already installed
+try:
+    import pyvene
+except ImportError:
+    !pip install git+https://github.com/stanfordnlp/pyvene.git
+    import pyvene
+
+try:
+    import transformers
+except ImportError:
+    !pip install transformers
+    import transformers
+
+try:
+    import datasets
+except ImportError:
+    !pip install datasets
+    import datasets
+
+try:
+    import tqdm
+except ImportError:
+    !pip install tqdm
+    import tqdm
+
+# Import necessary modules
+import torch
+import numpy as np
+from pyvene import (
+    IntervenableModel,
+    IntervenableConfig,
+    BoundlessRotatedSpaceIntervention
+)
+from transformers import (
+    GPT2Tokenizer,
+    GPT2LMHeadModel,
+    set_seed
+)
+from datasets import Dataset
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import random
+
+# Set device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Load GPT-2 tokenizer and model
+tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+tokenizer.pad_token = tokenizer.eos_token  # Ensure there is a pad token
+
+model = GPT2LMHeadModel.from_pretrained('gpt2')
+model.to(device)
+model.eval()
+
+# Set random seeds for reproducibility
+random.seed(42)
+np.random.seed(42)
+torch.manual_seed(42)
+
+# Define object attributes and abbreviations
+colors = ['yellow', 'blue', 'green']
+shapes = ['circle', 'triangle', 'rectangle']
+sizes = ['small', 'medium', 'large']
+
+color_abbr = {'yellow': 'yel', 'blue': 'blu', 'green': 'grn'}
+shape_abbr = {'circle': 'cir', 'triangle': 'tri', 'rectangle': 'rec'}
+size_abbr = {'small': 'sml', 'medium': 'med', 'large': 'lrg'}
+
+# Logical rule: "yellow XOR circle"
+def rule_eval(color, shape):
+    return (color == 'yellow') ^ (shape == 'circle')
+
+# High-level causal model A: XOR as a unitary operation
+def causal_model_a(color, shape):
+    return (color == 'yellow') ^ (shape == 'circle')
+
+# High-level causal model B: XOR decomposed into OR, AND, NOT
+def causal_model_b(color, shape):
+    color_is_yellow = color == 'yellow'
+    shape_is_circle = shape == 'circle'
+    result = (color_is_yellow or shape_is_circle) and not (color_is_yellow and shape_is_circle)
+    return result
+
+# Function to generate fixed-length prompts and targets
+def generate_prompt_and_target():
+    intro = (
+        "We will use 'yel' for yellow, 'blu' for blue, 'grn' for green.\n"
+        "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n"
+        "We will use 'sml' for small, 'med' for medium, 'lrg' for large.\n\n"
+    )
+
+    prompt = (
+        "Learn the secret rule to label the objects correctly. "
+        "If an object follows the rule, it should be labeled 'True'. Otherwise, 'False'. "
+        "Be concise and always follow the arrow '->' with an object's label.\n\n"
+        "Label the following objects:\n"
+    )
+
+    # Generate objects
+    num_objects = 5  # Fixed number to keep prompt length constant
+    objects = []
+    labels = []
+    for _ in range(num_objects):
+        color = random.choice(colors)
+        shape = random.choice(shapes)
+        size = random.choice(sizes)
+        obj_str = f"- {size_abbr[size]} {color_abbr[color]} {shape_abbr[shape]}"
+        label = 'True' if rule_eval(color, shape) else 'False'
+        objects.append(obj_str)
+        labels.append(f"{obj_str} -> {label}")
+
+    # Combine prompt and target
+    full_prompt = intro + prompt + "\n".join(objects) + "\n"
+    full_target = "\n".join(labels) + "\n"
+
+    # Tokenize
+    inputs = tokenizer(full_prompt, return_tensors='pt')
+    targets = tokenizer(full_target, return_tensors='pt')
+
+    # Combine inputs and labels
+    input_ids = torch.cat([inputs['input_ids'], targets['input_ids']], dim=1).squeeze()
+    attention_mask = torch.ones_like(input_ids)
+    labels = input_ids.clone()
+    labels[:inputs['input_ids'].shape[1]] = -100  # Mask out the prompt
+
+    return {
+        'input_ids': input_ids.squeeze(),
+        'attention_mask': attention_mask.squeeze(),
+        'labels': labels.squeeze()
+    }
+
+# Generate dataset
+num_examples = 20000  # Adjust as needed
+data = [generate_prompt_and_target() for _ in tqdm(range(num_examples), desc="Generating dataset")]
+
+# Ensure all sequences are of the same length
+max_length = max(len(d['input_ids']) for d in data)
+
+def pad_sequence(seq, max_length):
+    return torch.cat([seq, torch.full((max_length - len(seq),), tokenizer.pad_token_id, dtype=torch.long)])
+
+def pad_attention(seq, max_length):
+    return torch.cat([seq, torch.zeros(max_length - len(seq), dtype=torch.long)])
+
+def pad_labels(seq, max_length):
+    return torch.cat([seq, torch.full((max_length - len(seq),), -100, dtype=torch.long)])
+
+# Pad sequences
+for d in data:
+    d['input_ids'] = pad_sequence(d['input_ids'], max_length)
+    d['attention_mask'] = pad_attention(d['attention_mask'], max_length)
+    d['labels'] = pad_labels(d['labels'], max_length)
+
+# Create HuggingFace dataset
+dataset = Dataset.from_dict({
+    'input_ids': [d['input_ids'].tolist() for d in data],
+    'attention_mask': [d['attention_mask'].tolist() for d in data],
+    'labels': [d['labels'].tolist() for d in data]
+})
+
+# Split into training and validation sets
+split_data = dataset.train_test_split(test_size=0.1)
+train_dataset = split_data['train']
+valid_dataset = split_data['test']
+
+# Set format for PyTorch tensors
+train_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
+valid_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
+
+# Create DataLoaders
+batch_size = 8
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+valid_loader = DataLoader(valid_dataset, batch_size=batch_size)
+
+# Initialize Boundless DAS module
+subspace_proj = BoundlessRotatedSpaceIntervention(embed_dim=model.config.n_embd)
+subspace_proj.to(device)
+
+# Training parameters
+epochs = 3
+optimizer_params = [
+    {'params': subspace_proj.rotate_layer.parameters()},
+    {'params': subspace_proj.intervention_boundaries, 'lr': 1e-2}
+]
+optimizer = torch.optim.Adam(optimizer_params, lr=1e-3)
+total_steps = epochs * len(train_loader)
+scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, total_iters=total_steps)
+
+# Define loss function
+loss_fn = torch.nn.CrossEntropyLoss()
+
+# Training loop for the main model
+for epoch in range(epochs):
+    subspace_proj.train()
+    pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
+    for batch in pbar:
+        optimizer.zero_grad()
+
+        # Move data to device
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
+        labels = batch['labels'].to(device)
+
+        # Forward pass
+        outputs = model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        logits = outputs.logits
+
+        # Compute loss
+        loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        pbar.set_postfix({'loss': loss.item()})
+
+# Function to generate intervention data
+def generate_intervention_data(num_examples, causal_model_func):
+    intervention_data = []
+    for _ in tqdm(range(num_examples), desc="Generating intervention data"):
+        # Base example
+        color_base = random.choice(colors)
+        shape_base = random.choice(shapes)
+        size_base = random.choice(sizes)
+        label_base = 'True' if causal_model_func(color_base, shape_base) else 'False'
+
+        # Source example
+        while True:
+            color_source = random.choice(colors)
+            shape_source = random.choice(shapes)
+            if color_source != color_base or shape_source != shape_base:
+                break
+        size_source = size_base  # Keep size the same
+        label_source = 'True' if causal_model_func(color_source, shape_source) else 'False'
+
+        # Create prompts and targets
+        intro = (
+            "We will use 'yel' for yellow, 'blu' for blue, 'grn' for green.\n"
+            "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n"
+            "We will use 'sml' for small, 'med' for medium, 'lrg' for large.\n\n"
+        )
+        prompt = (
+            "Learn the secret rule to label the objects correctly. "
+            "If an object follows the rule, it should be labeled 'True'. Otherwise, 'False'. "
+            "Be concise and always follow the arrow '->' with an object's label.\n\n"
+            "Label the following object:\n"
+        )
+        obj_base = f"- {size_abbr[size_base]} {color_abbr[color_base]} {shape_abbr[shape_base]}"
+        target_base = f"{obj_base} -> {label_base}\n"
+
+        obj_source = f"- {size_abbr[size_source]} {color_abbr[color_source]} {shape_abbr[shape_source]}"
+        target_source = f"{obj_base} -> {label_source}\n"  # Note: obj_base in prompt, label from source
+
+        # Tokenize base and source
+        full_prompt_base = intro + prompt + obj_base + "\n" + target_base
+        full_prompt_source = intro + prompt + obj_base + "\n" + target_source
+
+        inputs_base = tokenizer(full_prompt_base, return_tensors='pt')
+        inputs_source = tokenizer(full_prompt_source, return_tensors='pt')
+
+        # Labels
+        labels_base = inputs_base['input_ids'].clone()
+        labels_source = inputs_source['input_ids'].clone()
+
+        # Mask out the prompt
+        prompt_length = inputs_base['input_ids'].shape[1] - len(tokenizer(target_base)['input_ids'])
+        labels_base[:, :prompt_length] = -100
+        labels_source[:, :prompt_length] = -100
+
+        intervention_data.append({
+            'input_ids_base': inputs_base['input_ids'].squeeze(),
+            'attention_mask_base': inputs_base['attention_mask'].squeeze(),
+            'labels_base': labels_base.squeeze(),
+            'input_ids_source': inputs_source['input_ids'].squeeze(),
+            'attention_mask_source': inputs_source['attention_mask'].squeeze(),
+            'labels_source': labels_source.squeeze()
+        })
+    return intervention_data
+
+# Generate intervention data for both causal models
+intervention_examples = 10000
+
+# For Causal Model A
+intervention_data_a = generate_intervention_data(intervention_examples, causal_model_a)
+
+# For Causal Model B
+intervention_data_b = generate_intervention_data(intervention_examples, causal_model_b)
+
+# Function to prepare intervention data
+def prepare_intervention_data(intervention_data):
+    # Ensure sequences are of the same length
+    max_length_intervention = max(
+        max(len(d['input_ids_base']) for d in intervention_data),
+        max(len(d['input_ids_source']) for d in intervention_data)
+    )
+
+    # Pad intervention data
+    for d in intervention_data:
+        d['input_ids_base'] = pad_sequence(d['input_ids_base'], max_length_intervention)
+        d['attention_mask_base'] = pad_attention(d['attention_mask_base'], max_length_intervention)
+        d['labels_base'] = pad_labels(d['labels_base'], max_length_intervention)
+        d['input_ids_source'] = pad_sequence(d['input_ids_source'], max_length_intervention)
+        d['attention_mask_source'] = pad_attention(d['attention_mask_source'], max_length_intervention)
+        d['labels_source'] = pad_labels(d['labels_source'], max_length_intervention)
+
+    # Create intervention Dataset and DataLoader
+    intervention_dataset = Dataset.from_dict({
+        'input_ids_base': [d['input_ids_base'].tolist() for d in intervention_data],
+        'attention_mask_base': [d['attention_mask_base'].tolist() for d in intervention_data],
+        'labels_base': [d['labels_base'].tolist() for d in intervention_data],
+        'input_ids_source': [d['input_ids_source'].tolist() for d in intervention_data],
+        'attention_mask_source': [d['attention_mask_source'].tolist() for d in intervention_data],
+        'labels_source': [d['labels_source'].tolist() for d in intervention_data]
+    })
+
+    intervention_dataset.set_format(type='torch', columns=[
+        'input_ids_base', 'attention_mask_base', 'labels_base',
+        'input_ids_source', 'attention_mask_source', 'labels_source'
+    ])
+
+    intervention_loader = DataLoader(intervention_dataset, batch_size=batch_size)
+    return intervention_loader
+
+# Prepare intervention data loaders
+intervention_loader_a = prepare_intervention_data(intervention_data_a)
+intervention_loader_b = prepare_intervention_data(intervention_data_b)
+
+# Training Boundless DAS on intervention data for Causal Model A
+intervention_layer = 6  # Choose the layer to intervene on
+
+print("\nTraining Boundless DAS for Causal Model A...")
+for epoch in range(epochs):
+    subspace_proj.train()
+    pbar = tqdm(intervention_loader_a, desc=f"Intervention Epoch {epoch+1}/{epochs} (Model A)")
+    for batch in pbar:
+        optimizer.zero_grad()
+
+        # Move data to device
+        input_ids_base = batch['input_ids_base'].to(device)
+        attention_mask_base = batch['attention_mask_base'].to(device)
+        labels_base = batch['labels_base'].to(device)
+        input_ids_source = batch['input_ids_source'].to(device)
+        attention_mask_source = batch['attention_mask_source'].to(device)
+        labels_source = batch['labels_source'].to(device)
+
+        # Get base and source outputs
+        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
+        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+
+        # Get hidden states at intervention layer
+        hidden_states_base = outputs_base.hidden_states[intervention_layer]
+        hidden_states_source = outputs_source.hidden_states[intervention_layer]
+
+        # Apply Boundless DAS intervention
+        mixed_hidden_states = subspace_proj(hidden_states_base, hidden_states_source)
+
+        # Continue forward pass from the intervention layer
+        hidden_states = mixed_hidden_states
+        for layer in model.transformer.h[intervention_layer:]:
+            hidden_states = layer(hidden_states)[0]
+
+        logits = model.lm_head(hidden_states)
+
+        # Compute loss
+        loss = loss_fn(logits.view(-1, logits.size(-1)), labels_source.view(-1))
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        pbar.set_postfix({'loss': loss.item()})
+
+# Evaluate Interchange Intervention Accuracy (IIA) for Causal Model A
+print("\nEvaluating IIA for Causal Model A...")
+subspace_proj.eval()
+total_tokens = 0
+correct_tokens = 0
+
+with torch.no_grad():
+    for batch in tqdm(intervention_loader_a, desc="Evaluating IIA (Model A)"):
+        # Move data to device
+        input_ids_base = batch['input_ids_base'].to(device)
+        attention_mask_base = batch['attention_mask_base'].to(device)
+        labels_source = batch['labels_source'].to(device)
+
+        # Get base and source outputs
+        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
+        hidden_states_base = outputs_base.hidden_states[intervention_layer]
+
+        # Apply Boundless DAS intervention (using source data as target)
+        mixed_hidden_states = subspace_proj(hidden_states_base, hidden_states_base)  # No swapping here for evaluation
+
+        # Continue forward pass
+        hidden_states = mixed_hidden_states
+        for layer in model.transformer.h[intervention_layer:]:
+            hidden_states = layer(hidden_states)[0]
+
+        logits = model.lm_head(hidden_states)
+
+        # Get predictions
+        predictions = torch.argmax(logits, dim=-1)
+
+        # Calculate accuracy
+        mask = (labels_source != -100)
+        total_tokens += mask.sum().item()
+        correct_tokens += ((predictions == labels_source) & mask).sum().item()
+
+iia_score_a = correct_tokens / total_tokens
+print(f"\nInterchange Intervention Accuracy (IIA) for Model A: {iia_score_a:.4f}")
+
+# Training Boundless DAS on intervention data for Causal Model B
+# Re-initialize Boundless DAS module for Model B
+subspace_proj_b = BoundlessRotatedSpaceIntervention(embed_dim=model.config.n_embd)
+subspace_proj_b.to(device)
+
+print("\nTraining Boundless DAS for Causal Model B...")
+for epoch in range(epochs):
+    subspace_proj_b.train()
+    pbar = tqdm(intervention_loader_b, desc=f"Intervention Epoch {epoch+1}/{epochs} (Model B)")
+    for batch in pbar:
+        optimizer.zero_grad()
+
+        # Move data to device
+        input_ids_base = batch['input_ids_base'].to(device)
+        attention_mask_base = batch['attention_mask_base'].to(device)
+        labels_base = batch['labels_base'].to(device)
+        input_ids_source = batch['input_ids_source'].to(device)
+        attention_mask_source = batch['attention_mask_source'].to(device)
+        labels_source = batch['labels_source'].to(device)
+
+        # Get base and source outputs
+        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
+        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+
+        # Get hidden states at intervention layer
+        hidden_states_base = outputs_base.hidden_states[intervention_layer]
+        hidden_states_source = outputs_source.hidden_states[intervention_layer]
+
+        # Apply Boundless DAS intervention
+        mixed_hidden_states = subspace_proj_b(hidden_states_base, hidden_states_source)
+
+        # Continue forward pass from the intervention layer
+        hidden_states = mixed_hidden_states
+        for layer in model.transformer.h[intervention_layer:]:
+            hidden_states = layer(hidden_states)[0]
+
+        logits = model.lm_head(hidden_states)
+
+        # Compute loss
+        loss = loss_fn(logits.view(-1, logits.size(-1)), labels_source.view(-1))
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        pbar.set_postfix({'loss': loss.item()})
+
+# Evaluate Interchange Intervention Accuracy (IIA) for Causal Model B
+print("\nEvaluating IIA for Causal Model B...")
+subspace_proj_b.eval()
+total_tokens = 0
+correct_tokens = 0
+
+with torch.no_grad():
+    for batch in tqdm(intervention_loader_b, desc="Evaluating IIA (Model B)"):
+        # Move data to device
+        input_ids_base = batch['input_ids_base'].to(device)
+        attention_mask_base = batch['attention_mask_base'].to(device)
+        labels_source = batch['labels_source'].to(device)
+
+        # Get base outputs
+        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
+        hidden_states_base = outputs_base.hidden_states[intervention_layer]
+
+        # Apply Boundless DAS intervention
+        mixed_hidden_states = subspace_proj_b(hidden_states_base, hidden_states_base)  # No swapping here for evaluation
+
+        # Continue forward pass
+        hidden_states = mixed_hidden_states
+        for layer in model.transformer.h[intervention_layer:]:
+            hidden_states = layer(hidden_states)[0]
+
+        logits = model.lm_head(hidden_states)
+
+        # Get predictions
+        predictions = torch.argmax(logits, dim=-1)
+
+        # Calculate accuracy
+        mask = (labels_source != -100)
+        total_tokens += mask.sum().item()
+        correct_tokens += ((predictions == labels_source) & mask).sum().item()
+
+iia_score_b = correct_tokens / total_tokens
+print(f"\nInterchange Intervention Accuracy (IIA) for Model B: {iia_score_b:.4f}")
+
+# Compare IIA scores
+print("\n--- Comparison of IIA Scores ---")
+print(f"IIA for Model A (XOR as unitary): {iia_score_a:.4f}")
+print(f"IIA for Model B (XOR decomposed): {iia_score_b:.4f}")
+
+if iia_score_a > iia_score_b:
+    print("The model's reasoning aligns more with Causal Model A (XOR as unitary operation).")
+elif iia_score_b > iia_score_a:
+    print("The model's reasoning aligns more with Causal Model B (XOR decomposed into OR, AND, NOT).")
+else:
+    print("The model's reasoning aligns equally with both causal models.")
