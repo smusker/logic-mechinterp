@@ -1,3 +1,5 @@
+from utilities import compare_rules, assess_rule_consistency
+
 # Install Pyvene if not already installed
 try:
     import pyvene
@@ -106,28 +108,6 @@ def extract_rule(output_text):
         return output_text[start_idx:].strip()
     else:
         return ""
-
-def compare_rules(rule1, rule2):
-    """
-    Implement this function using an LLM API or semantic similarity measure.
-    For demonstration, we'll consider rules the same if they share significant keywords.
-    """
-    # Simplistic comparison for demonstration purposes
-    keywords1 = set(rule1.lower().split())
-    keywords2 = set(rule2.lower().split())
-    common_keywords = keywords1.intersection(keywords2)
-    return len(common_keywords) / max(len(keywords1), len(keywords2)) > 0.5  # Adjust threshold as needed
-
-def assess_rule_consistency(assigned_label, test_object_description, rule_description):
-    """
-    Placeholder function to assess consistency between the assigned label
-    and the rule description.
-    Implement using an external LLM API or semantic analysis tool.
-    Return True if consistent, False otherwise.
-    """
-    # Placeholder implementation
-    # In practice, you might use an LLM to evaluate the consistency
-    return True  # Assume consistent for demonstration purposes
 
 def label_test_object_in_output(output_text, test_object_line):
     """
