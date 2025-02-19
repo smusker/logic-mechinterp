@@ -201,6 +201,9 @@ num_layers = model.config.n_layer
 # Components to intervene on
 components = ['residual', 'mlp_activation', 'attention_output']
 
+# Proportion of interventions to perform (e.g., 0.01 for 1%)
+intervention_proportion = 0.01
+
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
     # Open a log file to write outputs
@@ -395,6 +398,10 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                     for layer_num in range(num_layers):
                         for pos_idx, position_name in enumerate(
                                 position_names):
+                            # Randomly decide whether to perform the intervention
+                            if random.random() > intervention_proportion:
+                                continue  # Skip this intervention
+
                             token_pos = token_positions[position_name]
                             # Collect activations
                             key = (component, layer_num)
@@ -609,12 +616,17 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             )
 
         # Save intervention records to CSV
-        df_records = pd.DataFrame(intervention_records)
-        csv_filename = f"intervention_records/{rule_name}_interventions.csv"
-        df_records.to_csv(csv_filename, index=False)
-        log_file.write(
-            f"Intervention records saved as {csv_filename}\n"
-        )
+        if intervention_records:
+            df_records = pd.DataFrame(intervention_records)
+            csv_filename = f"intervention_records/{rule_name}_interventions.csv"
+            df_records.to_csv(csv_filename, index=False)
+            log_file.write(
+                f"Intervention records saved as {csv_filename}\n"
+            )
+        else:
+            log_file.write(
+                f"No interventions recorded for {rule_name}.\n"
+            )
 
         # Plot the results for each component
         for comp_idx, component in enumerate(components):
