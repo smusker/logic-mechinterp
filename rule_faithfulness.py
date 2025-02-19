@@ -204,6 +204,10 @@ components = ['residual', 'mlp_activation', 'attention_output']
 # Proportion of interventions to perform (e.g., 0.01 for 1%)
 intervention_proportion = 0.01
 
+# Number of correct and incorrect runs to collect
+num_correct_runs = 3
+num_incorrect_runs = 3
+
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
     # Open a log file to write outputs
@@ -218,16 +222,9 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
     input_prompt = prompt  # Save the prompt for records
     max_new_tokens = 5  # Maximum number of tokens to generate
 
-    # Number of correct and incorrect runs to collect
-    num_correct_runs = 3
-    num_incorrect_runs = 3
-
     # Collect correct and incorrect runs
     correct_runs = []
     incorrect_runs = []
-
-    # List to keep track of seeds used
-    used_seeds = set()
 
     # Function to capture activations with correct variable scoping
     def get_activation_capturer(activations_dict, key):
@@ -237,12 +234,12 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             activations_dict[key].append(output.detach())
         return capturer
 
-    # Function to register hooks
-    def register_hooks(activations):
+    # Function to register hooks for selected layers and components
+    def register_hooks(activations, layer_nums, components_to_capture):
         handles = []
-        for layer_num in range(num_layers):
+        for layer_num in layer_nums:
             layer = model.transformer.h[layer_num]
-            for component in components:
+            for component in components_to_capture:
                 key = (component, layer_num)
                 if component == 'residual':
                     handle = layer.register_forward_hook(
@@ -259,113 +256,164 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                 handles.append(handle)
         return handles
 
-    # Collect correct runs
-    attempts = 0
-    while len(correct_runs) < num_correct_runs and attempts < 100:
-        seed = random.randint(0, 10000)
-        if seed in used_seeds:
-            continue
-        used_seeds.add(seed)
-        set_seed(seed)
-        activations = {}
-        handles = register_hooks(activations)
-        # Generate output
-        output_sequences = model.generate(
-            input_ids=inputs['input_ids'],
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            pad_token_id=tokenizer.pad_token_id,
-        )
-        # Remove hooks
-        for handle in handles:
-            handle.remove()
-        output_text = tokenizer.decode(
-            output_sequences[0], skip_special_tokens=True
-        )
-        assigned_label = label_test_object_in_output(
-            output_text, test_object_line
-        )
-        true_label = label_object(test_object_line, rule_description)
-        if assigned_label == true_label and assigned_label is not None:
-            # Get combined tokens and positions
-            tokens, position_names, token_positions = \
-                get_output_token_positions(
-                    output_sequences, tokenized_prompt, max_new_tokens
-                )
-            correct_runs.append({
-                'text': output_text,
-                'activations': activations,
-                'assigned_label': assigned_label,
-                'rule': extract_rule(output_text),
-                'tokens': tokens,
-                'position_names': position_names,
-                'token_positions': token_positions,
-                'output_sequences': output_sequences,
-            })
-        attempts += 1
+    # Collect correct and incorrect runs
+    required_runs = {'correct': set(), 'incorrect': set()}
 
-    # Collect incorrect runs
-    attempts = 0
-    while len(incorrect_runs) < num_incorrect_runs and attempts < 100:
-        seed = random.randint(0, 10000)
-        if seed in used_seeds:
-            continue
-        used_seeds.add(seed)
-        set_seed(seed)
-        activations = {}
-        handles = register_hooks(activations)
-        # Generate output
-        output_sequences = model.generate(
-            input_ids=inputs['input_ids'],
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=1.0,
-            pad_token_id=tokenizer.pad_token_id,
-        )
-        # Remove hooks
-        for handle in handles:
-            handle.remove()
-        output_text = tokenizer.decode(
-            output_sequences[0], skip_special_tokens=True
-        )
-        assigned_label = label_test_object_in_output(
-            output_text, test_object_line
-        )
-        true_label = label_object(test_object_line, rule_description)
-        if assigned_label is not None and assigned_label != true_label:
-            # Get combined tokens and positions
-            tokens, position_names, token_positions = \
-                get_output_token_positions(
-                    output_sequences, tokenized_prompt, max_new_tokens
-                )
-            incorrect_runs.append({
-                'text': output_text,
-                'activations': activations,
-                'assigned_label': assigned_label,
-                'rule': extract_rule(output_text),
-                'tokens': tokens,
-                'position_names': position_names,
-                'token_positions': token_positions,
-                'output_sequences': output_sequences,
-            })
-        attempts += 1
+    # Early intervention sampling to decide which interventions to perform
+    total_possible_interventions = (
+        num_correct_runs * num_incorrect_runs * len(components) * num_layers
+    )
+    num_interventions_to_perform = int(total_possible_interventions * intervention_proportion)
 
-    # Ensure we have enough runs
-    if len(correct_runs) < num_correct_runs or \
-       len(incorrect_runs) < num_incorrect_runs:
+    # Generate list of all possible interventions
+    all_interventions = []
+    for correct_idx in range(num_correct_runs):
+        for incorrect_idx in range(num_incorrect_runs):
+            for comp_idx, component in enumerate(components):
+                for layer_num in range(num_layers):
+                    all_interventions.append({
+                        'correct_idx': correct_idx,
+                        'incorrect_idx': incorrect_idx,
+                        'component': component,
+                        'layer_num': layer_num
+                    })
+
+    # Randomly select interventions to perform
+    selected_interventions = random.sample(all_interventions, num_interventions_to_perform)
+
+    # Determine which runs and activations are needed
+    for interv in selected_interventions:
+        required_runs['correct'].add(interv['correct_idx'])
+        required_runs['incorrect'].add(interv['incorrect_idx'])
+
+    # Collect necessary correct runs
+    collected_correct_runs = {}
+    for idx in required_runs['correct']:
+        attempts = 0
+        while attempts < 100:
+            seed = random.randint(0, 10000)
+            set_seed(seed)
+            activations = {}
+            # Only capture activations for layers and components needed
+            components_to_capture = set(
+                interv['component'] for interv in selected_interventions if interv['correct_idx'] == idx
+            )
+            layers_to_capture = set(
+                interv['layer_num'] for interv in selected_interventions if interv['correct_idx'] == idx
+            )
+            handles = register_hooks(activations, layers_to_capture, components_to_capture)
+            # Generate output
+            output_sequences = model.generate(
+                input_ids=inputs['input_ids'],
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+            # Remove hooks
+            for handle in handles:
+                handle.remove()
+            output_text = tokenizer.decode(
+                output_sequences[0], skip_special_tokens=True
+            )
+            assigned_label = label_test_object_in_output(
+                output_text, test_object_line
+            )
+            true_label = label_object(test_object_line, rule_description)
+            if assigned_label == true_label and assigned_label is not None:
+                # Get combined tokens and positions
+                tokens, position_names, token_positions = \
+                    get_output_token_positions(
+                        output_sequences, tokenized_prompt, max_new_tokens
+                    )
+                collected_correct_runs[idx] = {
+                    'text': output_text,
+                    'activations': activations,
+                    'assigned_label': assigned_label,
+                    'rule': extract_rule(output_text),
+                    'tokens': tokens,
+                    'position_names': position_names,
+                    'token_positions': token_positions,
+                    'output_sequences': output_sequences,
+                }
+                break  # Exit after successful collection
+            attempts += 1
+        else:
+            log_file.write(
+                f"Failed to collect required correct run {idx} for {rule_name}.\n"
+            )
+
+    # Collect necessary incorrect runs
+    collected_incorrect_runs = {}
+    for idx in required_runs['incorrect']:
+        attempts = 0
+        while attempts < 100:
+            seed = random.randint(0, 10000)
+            set_seed(seed)
+            activations = {}
+            # Only capture activations for layers and components needed
+            components_to_capture = set(
+                interv['component'] for interv in selected_interventions if interv['incorrect_idx'] == idx
+            )
+            layers_to_capture = set(
+                interv['layer_num'] for interv in selected_interventions if interv['incorrect_idx'] == idx
+            )
+            handles = register_hooks(activations, layers_to_capture, components_to_capture)
+            # Generate output
+            output_sequences = model.generate(
+                input_ids=inputs['input_ids'],
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=1.0,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+            # Remove hooks
+            for handle in handles:
+                handle.remove()
+            output_text = tokenizer.decode(
+                output_sequences[0], skip_special_tokens=True
+            )
+            assigned_label = label_test_object_in_output(
+                output_text, test_object_line
+            )
+            true_label = label_object(test_object_line, rule_description)
+            if assigned_label is not None and assigned_label != true_label:
+                # Get combined tokens and positions
+                tokens, position_names, token_positions = \
+                    get_output_token_positions(
+                        output_sequences, tokenized_prompt, max_new_tokens
+                    )
+                collected_incorrect_runs[idx] = {
+                    'text': output_text,
+                    'activations': activations,
+                    'assigned_label': assigned_label,
+                    'rule': extract_rule(output_text),
+                    'tokens': tokens,
+                    'position_names': position_names,
+                    'token_positions': token_positions,
+                    'output_sequences': output_sequences,
+                }
+                break  # Exit after successful collection
+            attempts += 1
+        else:
+            log_file.write(
+                f"Failed to collect required incorrect run {idx} for {rule_name}.\n"
+            )
+
+    # Check if all required runs were collected
+    if len(collected_correct_runs) < len(required_runs['correct']) or \
+       len(collected_incorrect_runs) < len(required_runs['incorrect']):
         log_file.write(
-            f"Not enough correct and incorrect runs were collected "
-            f"for {rule_name}.\n"
+            f"Not all required runs were collected for {rule_name}. Skipping to next rule.\n"
         )
         log_file.close()
         continue
     else:
-        # Use the token positions and names from the correct runs
-        position_names = correct_runs[0]['position_names']
-        token_positions = correct_runs[0]['token_positions']
+        # Use the token positions and names from one of the runs (assuming consistency)
+        position_names = list(collected_correct_runs.values())[0]['position_names']
+        token_positions = list(collected_correct_runs.values())[0]['token_positions']
         num_positions = len(position_names)
-        
+
         # Initialize results storage
         co_flip_counts = np.zeros((len(components), num_layers, num_positions))
         categorization_flip_counts = np.zeros(
@@ -373,7 +421,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         )
         consistency_counts = np.zeros((len(components), num_layers,
                                        num_positions))
-        
+
         # Initialize counter for interventions skipped
         interventions_skipped_due_to_length_mismatch = 0
 
@@ -385,185 +433,187 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         total_co_flips = 0
         total_consistencies = 0
 
-        # Create combinations of correct and incorrect runs
-        for correct_run in correct_runs:
-            for incorrect_run in incorrect_runs:
-                # Ensure tokens and positions align
-                if correct_run['position_names'] != \
-                   incorrect_run['position_names']:
-                    continue  # Skip if token positions don't align
-                
-                # Perform interventions over components, layers, positions
-                for comp_idx, component in enumerate(components):
-                    for layer_num in range(num_layers):
-                        for pos_idx, position_name in enumerate(
-                                position_names):
-                            # Randomly decide whether to perform the intervention
-                            if random.random() > intervention_proportion:
-                                continue  # Skip this intervention
+        # Perform selected interventions
+        for intervention in selected_interventions:
+            correct_idx = intervention['correct_idx']
+            incorrect_idx = intervention['incorrect_idx']
+            component = intervention['component']
+            layer_num = intervention['layer_num']
 
-                            token_pos = token_positions[position_name]
-                            # Collect activations
-                            key = (component, layer_num)
-                            # Check if activations are available
-                            if len(correct_run['activations'][key]) <= \
-                               token_pos or \
-                               len(incorrect_run['activations'][key]) <= \
-                               token_pos:
-                                continue  # Skip if activations missing
+            correct_run = collected_correct_runs[correct_idx]
+            incorrect_run = collected_incorrect_runs[incorrect_idx]
 
-                            base_activation = correct_run['activations'][
-                                key][token_pos]
-                            source_activation = incorrect_run['activations'][
-                                key][token_pos]
-                            
-                            # Create intervention configuration
-                            intervention_config = IntervenableConfig(
-                                representations=[
-                                    RepresentationConfig(
-                                        layer=layer_num,
-                                        component=component,
-                                    )
-                                ],
-                                intervention_types=VanillaIntervention,
-                            )
+            # Ensure tokens and positions align
+            if correct_run['position_names'] != incorrect_run['position_names']:
+                continue  # Skip if token positions don't align
 
-                            # Initialize the IntervenableModel
-                            intervenable_model = IntervenableModel(
-                                intervention_config, model
-                            )
+            token_positions = correct_run['token_positions']
+            position_names = correct_run['position_names']
+            num_positions = len(position_names)
 
-                            # Prepare unit_locations
-                            unit_locations = {
-                                "sources->base": (
-                                    [[token_pos]],  # Positions in source
-                                    [[token_pos]],  # Positions in base
-                                )
-                            }
+            # Since we are only capturing activations for needed positions, we can proceed
+            for pos_idx, position_name in enumerate(position_names):
+                token_pos = token_positions[position_name]
 
-                            # Prepare input_ids
-                            base_input_ids = torch.cat(
-                                [inputs['input_ids'][0],
-                                 correct_run['output_sequences'][0][
-                                     inputs['input_ids'].shape[1]:]],
-                                dim=0).unsqueeze(0)
-                            sources_input_ids = torch.cat(
-                                [inputs['input_ids'][0],
-                                 incorrect_run['output_sequences'][0][
-                                     inputs['input_ids'].shape[1]:]],
-                                dim=0).unsqueeze(0)
+                key = (component, layer_num)
 
-                            # Check if sequence lengths match
-                            if base_input_ids.shape[1] != \
-                               sources_input_ids.shape[1]:
-                                interventions_skipped_due_to_length_mismatch \
-                                    += 1
-                                continue  # Skip this intervention
+                # Check if activations are available
+                if key not in correct_run['activations'] or \
+                   key not in incorrect_run['activations']:
+                    continue  # Skip if activations missing
+                if len(correct_run['activations'][key]) <= token_pos or \
+                   len(incorrect_run['activations'][key]) <= token_pos:
+                    continue  # Skip if activations missing at this position
 
-                            # Run the model with intervention
-                            with torch.no_grad():
-                                _, intervened_outputs = intervenable_model(
-                                    base={'input_ids':
-                                          base_input_ids.to(device)},
-                                    sources={'input_ids':
-                                             sources_input_ids.to(device)},
-                                    activations={
-                                        'base': {key:
-                                                 correct_run['activations'][
-                                                     key]},
-                                        'sources': {key:
-                                                    incorrect_run[
-                                                        'activations'][key]},
-                                    },
-                                    unit_locations=unit_locations,
-                                    max_length=base_input_ids.shape[1],
-                                    do_sample=False,  # Deterministic
-                                    temperature=0.7,
-                                    pad_token_id=tokenizer.pad_token_id,
-                                )
+                base_activation = correct_run['activations'][key][token_pos]
+                source_activation = incorrect_run['activations'][key][token_pos]
 
-                            # Decode the intervened output
-                            intervened_text = tokenizer.decode(
-                                intervened_outputs.sequences[0],
-                                skip_special_tokens=True
-                            )
+                # Create intervention configuration
+                intervention_config = IntervenableConfig(
+                    representations=[
+                        RepresentationConfig(
+                            layer=layer_num,
+                            component=component,
+                        )
+                    ],
+                    intervention_types=VanillaIntervention,
+                )
 
-                            # Extract assigned label and rule
-                            assigned_label_intervened = \
-                                label_test_object_in_output(
-                                    intervened_text, test_object_line
-                                )
-                            rule_intervened = extract_rule(intervened_text)
+                # Initialize the IntervenableModel
+                intervenable_model = IntervenableModel(
+                    intervention_config, model
+                )
 
-                            # Compare to correct run
-                            assigned_label_correct = correct_run[
-                                'assigned_label']
-                            rule_correct = correct_run['rule']
+                # Prepare unit_locations
+                unit_locations = {
+                    "sources->base": (
+                        [[token_pos]],  # Positions in source
+                        [[token_pos]],  # Positions in base
+                    )
+                }
 
-                            # Check if categorization flipped
-                            if assigned_label_intervened is None:
-                                continue  # Skip if label not found
-                            categorization_flipped = (
-                                assigned_label_intervened !=
-                                assigned_label_correct
-                            )
+                # Prepare input_ids
+                base_input_ids = torch.cat(
+                    [inputs['input_ids'][0],
+                     correct_run['output_sequences'][0][
+                         inputs['input_ids'].shape[1]:]],
+                    dim=0).unsqueeze(0)
+                sources_input_ids = torch.cat(
+                    [inputs['input_ids'][0],
+                     incorrect_run['output_sequences'][0][
+                         inputs['input_ids'].shape[1]:]],
+                    dim=0).unsqueeze(0)
 
-                            if categorization_flipped:
-                                # Increment flip counts
-                                categorization_flip_counts[
-                                    comp_idx, layer_num, pos_idx] += 1
-                                total_cat_flips += 1
+                # Check if sequence lengths match
+                if base_input_ids.shape[1] != \
+                   sources_input_ids.shape[1]:
+                    interventions_skipped_due_to_length_mismatch += 1
+                    continue  # Skip this intervention
 
-                                # Check if rule also changed
-                                if rule_intervened == "":
-                                    continue  # Skip if rule not found
-                                rule_changed = not compare_rules(
-                                    rule_intervened, rule_correct
-                                )
+                # Run the model with intervention
+                with torch.no_grad():
+                    _, intervened_outputs = intervenable_model(
+                        base={'input_ids':
+                              base_input_ids.to(device)},
+                        sources={'input_ids':
+                                 sources_input_ids.to(device)},
+                        activations={
+                            'base': {key:
+                                     [correct_run['activations'][key][token_pos]]},
+                            'sources': {key:
+                                        [incorrect_run['activations'][key][token_pos]]},
+                        },
+                        unit_locations=unit_locations,
+                        max_length=base_input_ids.shape[1],
+                        do_sample=False,  # Deterministic
+                        temperature=0.7,
+                        pad_token_id=tokenizer.pad_token_id,
+                    )
 
-                                if rule_changed:
-                                    # Increment co-flip counts
-                                    co_flip_counts[
-                                        comp_idx, layer_num, pos_idx] += 1
-                                    total_co_flips += 1
-                                    
-                                    # Check consistency
-                                    is_consistent = assess_rule_consistency(
-                                        assigned_label_intervened,
-                                        test_object_line,
-                                        rule_intervened
-                                    )
-                                    if is_consistent:
-                                        consistency_counts[
-                                            comp_idx, layer_num,
-                                            pos_idx] += 1
-                                        total_consistencies += 1
-                                    
-                                    # Save intervention record
-                                    intervention_records.append({
-                                        'input_prompt': input_prompt,
-                                        'correct_output':
-                                            correct_run['text'],
-                                        'incorrect_output':
-                                            incorrect_run['text'],
-                                        'intervention_component':
-                                            component,
-                                        'intervention_layer': layer_num,
-                                        'intervention_position':
-                                            position_name,
-                                        'changed_output': intervened_text,
-                                        'rule_changed': rule_changed,
-                                        'categorization_consistent':
-                                            is_consistent,
-                                        'assigned_label_intervened':
-                                            assigned_label_intervened,
-                                        'rule_intervened': rule_intervened,
-                                        'assigned_label_correct':
-                                            assigned_label_correct,
-                                        'rule_correct': rule_correct,
-                                        'test_object_line':
-                                            test_object_line,
-                                    })
+                # Decode the intervened output
+                intervened_text = tokenizer.decode(
+                    intervened_outputs.sequences[0],
+                    skip_special_tokens=True
+                )
+
+                # Extract assigned label and rule
+                assigned_label_intervened = \
+                    label_test_object_in_output(
+                        intervened_text, test_object_line
+                    )
+                rule_intervened = extract_rule(intervened_text)
+
+                # Compare to correct run
+                assigned_label_correct = correct_run['assigned_label']
+                rule_correct = correct_run['rule']
+
+                # Update component index
+                comp_idx = components.index(component)
+
+                # Check if categorization flipped
+                if assigned_label_intervened is None:
+                    continue  # Skip if label not found
+                categorization_flipped = (
+                    assigned_label_intervened !=
+                    assigned_label_correct
+                )
+
+                if categorization_flipped:
+                    # Increment flip counts
+                    categorization_flip_counts[
+                        comp_idx, layer_num, pos_idx] += 1
+                    total_cat_flips += 1
+
+                    # Check if rule also changed
+                    if rule_intervened == "":
+                        continue  # Skip if rule not found
+                    rule_changed = not compare_rules(
+                        rule_intervened, rule_correct
+                    )
+
+                    if rule_changed:
+                        # Increment co-flip counts
+                        co_flip_counts[
+                            comp_idx, layer_num, pos_idx] += 1
+                        total_co_flips += 1
+                        
+                        # Check consistency
+                        is_consistent = assess_rule_consistency(
+                            assigned_label_intervened,
+                            test_object_line,
+                            rule_intervened
+                        )
+                        if is_consistent:
+                            consistency_counts[
+                                comp_idx, layer_num,
+                                pos_idx] += 1
+                            total_consistencies += 1
+                        
+                        # Save intervention record
+                        intervention_records.append({
+                            'input_prompt': input_prompt,
+                            'correct_output':
+                                correct_run['text'],
+                            'incorrect_output':
+                                incorrect_run['text'],
+                            'intervention_component':
+                                component,
+                            'intervention_layer': layer_num,
+                            'intervention_position':
+                                position_name,
+                            'changed_output': intervened_text,
+                            'rule_changed': rule_changed,
+                            'categorization_consistent':
+                                is_consistent,
+                            'assigned_label_intervened':
+                                assigned_label_intervened,
+                            'rule_intervened': rule_intervened,
+                            'assigned_label_correct':
+                                assigned_label_correct,
+                            'rule_correct': rule_correct,
+                            'test_object_line':
+                                test_object_line,
+                        })
 
         # Report interventions skipped due to length mismatch
         log_file.write(
