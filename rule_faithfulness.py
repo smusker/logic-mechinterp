@@ -323,6 +323,9 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         categorization_flip_counts = np.zeros((len(components), num_layers, num_positions))
         consistency_counts = np.zeros((len(components), num_layers, num_positions))
         
+        # Initialize counter for interventions skipped due to length mismatch
+        interventions_skipped_due_to_length_mismatch = 0
+        
         # Create combinations of correct and incorrect runs
         total_cat_flips = 0
         total_co_flips = 0
@@ -356,10 +359,10 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                 ],
                                 intervention_types=VanillaIntervention,
                             )
-    
+
                             # Initialize the IntervenableModel
                             intervenable_model = IntervenableModel(intervention_config, model)
-    
+
                             # Prepare unit_locations for swapping activations at the token position
                             unit_locations = {
                                 "sources->base": (
@@ -367,19 +370,18 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                     [[token_pos]],  # Positions in base
                                 )
                             }
-    
-                            # Run the intervention
+
+                            # Prepare input_ids
+                            base_input_ids = torch.cat([inputs['input_ids'][0], correct_run['output_sequences'][0][inputs['input_ids'].shape[1]:]], dim=0).unsqueeze(0)
+                            sources_input_ids = torch.cat([inputs['input_ids'][0], incorrect_run['output_sequences'][0][inputs['input_ids'].shape[1]:]], dim=0).unsqueeze(0)
+
+                            # Check if sequence lengths match
+                            if base_input_ids.shape[1] != sources_input_ids.shape[1]:
+                                interventions_skipped_due_to_length_mismatch += 1
+                                continue  # Skip this intervention
+
+                            # Run the model
                             with torch.no_grad():
-                                # Create combined input_ids
-                                base_input_ids = torch.cat([inputs['input_ids'][0], correct_run['output_sequences'][0][inputs['input_ids'].shape[1]:]], dim=0).unsqueeze(0)
-                                sources_input_ids = torch.cat([inputs['input_ids'][0], incorrect_run['output_sequences'][0][inputs['input_ids'].shape[1]:]], dim=0).unsqueeze(0)
-                                
-                                # Ensure input_ids are the same length
-                                max_length = max(base_input_ids.shape[1], sources_input_ids.shape[1])
-                                base_input_ids = torch.nn.functional.pad(base_input_ids, (0, max_length - base_input_ids.shape[1]), value=tokenizer.pad_token_id)
-                                sources_input_ids = torch.nn.functional.pad(sources_input_ids, (0, max_length - sources_input_ids.shape[1]), value=tokenizer.pad_token_id)
-                                
-                                # Run the model
                                 _, intervened_outputs = intervenable_model(
                                     base={'input_ids': base_input_ids.to(device)},
                                     sources={'input_ids': sources_input_ids.to(device)},
@@ -388,38 +390,38 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                         'sources': {key: incorrect_run['activations'][key]},
                                     },
                                     unit_locations=unit_locations,
-                                    max_length=max_length,
+                                    max_length=base_input_ids.shape[1],
                                     do_sample=False,  # Keep deterministic to isolate the effect of intervention
                                     temperature=0.7,
                                     pad_token_id=tokenizer.pad_token_id,
                                 )
-    
+
                             # Decode the intervened output
                             intervened_text = tokenizer.decode(intervened_outputs.sequences[0], skip_special_tokens=True)
-    
+
                             # Extract assigned label and rule from intervened output
                             assigned_label_intervened = label_test_object_in_output(intervened_text, test_object_line)
                             rule_intervened = extract_rule(intervened_text)
-    
+
                             # Compare to correct run
                             assigned_label_correct = correct_run['assigned_label']
                             rule_correct = correct_run['rule']
-    
+
                             # Check if categorization flipped
                             if assigned_label_intervened is None:
                                 continue  # Skip if label not found
                             categorization_flipped = (assigned_label_intervened != assigned_label_correct)
-    
+
                             if categorization_flipped:
                                 # Increment categorization flip count
                                 categorization_flip_counts[comp_idx, layer_num, pos_idx] += 1
                                 total_cat_flips += 1
-    
+
                                 # Check if rule also changed compared to correct run
                                 if rule_intervened == "":
                                     continue  # Skip if rule not found
                                 rule_changed = not compare_rules(rule_intervened, rule_correct)
-    
+
                                 if rule_changed:
                                     # Increment co-flip count
                                     co_flip_counts[comp_idx, layer_num, pos_idx] += 1
@@ -434,14 +436,17 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                                     if is_consistent:
                                         consistency_counts[comp_idx, layer_num, pos_idx] += 1
                                         total_consistencies += 1
-    
+
+        # After all interventions, report how many were skipped due to length mismatch
+        print(f"Interventions skipped due to sequence length mismatch: {interventions_skipped_due_to_length_mismatch}")
+
         # Calculate the proportions
         with np.errstate(divide='ignore', invalid='ignore'):
             co_flip_proportions = np.true_divide(co_flip_counts, categorization_flip_counts)
             co_flip_proportions[np.isnan(co_flip_proportions)] = 0  # Set NaNs to zero where there were no flips
             consistency_proportions = np.true_divide(consistency_counts, co_flip_counts)
             consistency_proportions[np.isnan(consistency_proportions)] = 0  # Set NaNs to zero where no co-flips occurred
-    
+
         # Aggregate Statistics
         if total_cat_flips > 0:
             overall_co_flip_proportion = total_co_flips / total_cat_flips
@@ -453,7 +458,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             print(f"resulting in a consistency rate of {overall_consistency_proportion:.2%} among co-flips.")
         else:
             print(f"No categorization flips occurred for {rule_name}.")
-    
+
         # Plot the results for each component
         for comp_idx, component in enumerate(components):
             plt.figure(figsize=(15, 6))
