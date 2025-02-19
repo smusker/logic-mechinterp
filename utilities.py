@@ -25,3 +25,14 @@ def compare_rules(rule1, rule2):
     
     answer = response["choices"][0]["message"]["content"].strip().lower()
     return answer == "true"
+
+def assess_rule_consistency(assigned_label, test_object_description, rule_description):
+    """
+    Placeholder function to assess consistency between the assigned label
+    and the rule description.
+    Implement using an external LLM API or semantic analysis tool.
+    Return True if consistent, False otherwise.
+    """
+    # Placeholder implementation
+    # In practice, you might use an LLM to evaluate the consistency
+    return True  # Assume consistent for demonstration purposes
