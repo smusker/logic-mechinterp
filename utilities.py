@@ -1,9 +1,33 @@
 import openai
+import time
+
+def exponential_backoff(api_call, max_retries=5, base_delay=1):
+    retries = 0
+    while retries < max_retries:
+        try:
+            return api_call()
+        except openai.error.RateLimitError:
+            delay = base_delay * (2 ** retries)
+            time.sleep(delay)
+            retries += 1
+    raise Exception("Max retries exceeded for API call")
+
+def api_call(prompt):
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": "You are a logical reasoning assistant."},
+                  {"role": "user", "content": prompt}],
+        temperature=0.0
+    )
+    return response["choices"][0]["message"]["content"].strip().lower()
 
 def compare_rules(rule1, rule2):
     """
-    Uses OpenAI's GPT-4 API to determine if two rules are equivalent in meaning.
+    Uses OpenAI's GPT-4o mini API to determine if two rules are equivalent in meaning.
     """
+    if rule1.strip().lower() == rule2.strip().lower():
+        return True
+    
     prompt = (
         "Here are a few examples of equivalent rules:\n"
         "- 'An object is labeled True if it is blue or a rectangle'\n"
@@ -16,22 +40,15 @@ def compare_rules(rule1, rule2):
         f"Are the following two rules logically equivalent in meaning?\n\n"
         f"Rule 1: {rule1}\n"
         f"Rule 2: {rule2}\n\n"
-        "Please answer 'True' if they are equivalent and 'False' if they are not."
+        "Please answer 'True' if they are equivalent and 'False' if they are not. Respond now with only the word true or false: "
     )
     
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "system", "content": "You are a logical reasoning assistant."},
-                  {"role": "user", "content": prompt}],
-        temperature=0.0  # Make the response deterministic
-    )
-    
-    answer = response["choices"][0]["message"]["content"].strip().lower()
-    return answer == "true"
+    answer = exponential_backoff(lambda: api_call(prompt))
+    return "true" in answer
 
 def assess_rule_consistency(assigned_label, test_object_description, rule_description):
     """
-    Uses OpenAI's GPT-4 API to determine if a labeled object matches the given rule.
+    Uses OpenAI's GPT-4o mini API to determine if a labeled object matches the given rule.
     """
     prompt = (
         "Here are examples of applying rules to objects:\n"
@@ -49,15 +66,8 @@ def assess_rule_consistency(assigned_label, test_object_description, rule_descri
         f"Object: {test_object_description}\n"
         f"Assigned Label: {assigned_label}\n\n"
         "Does the assigned label correctly follow the rule?\n"
-        "Please answer 'True' if the label is correct and 'False' if it is incorrect."
+        "Please answer 'True' if the label is correct and 'False' if it is incorrect. Respond now with only the word true or false: "
     )
     
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "system", "content": "You are a logical reasoning assistant."},
-                  {"role": "user", "content": prompt}],
-        temperature=0.0  # Make the response deterministic
-    )
-    
-    answer = response["choices"][0]["message"]["content"].strip().lower()
-    return answer == "true"
+    answer = exponential_backoff(lambda: api_call(prompt))
+    return "true" in answer
