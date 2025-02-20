@@ -29,6 +29,9 @@ def compare_rules(rule1, rule2):
         return True
     
     prompt = (
+        "We will abbreviate sizes as: S=small, M=medium, L=large; "
+        "colors as: BLU=blue, GRN=green, YEL=yellow, RED=red; "
+        "shapes as: CIR=circle, TRI=triangle, REC=rectangle, SQR=square.\n\n"
         "Here are a few examples of equivalent rules:\n"
         "- 'An object is labeled True if it is blue or a rectangle'\n"
         "- 'An object is labeled True if it is a rectangle or blue'\n"
@@ -51,6 +54,9 @@ def assess_rule_consistency(assigned_label, test_object_description, rule_descri
     Uses OpenAI's GPT-4o mini API to determine if a labeled object matches the given rule.
     """
     prompt = (
+        "We will abbreviate sizes as: S=small, M=medium, L=large; "
+        "colors as: BLU=blue, GRN=green, YEL=yellow, RED=red; "
+        "shapes as: CIR=circle, TRI=triangle, REC=rectangle, SQR=square.\n\n"
         "Here are examples of applying rules to objects:\n\n"
         "- Rule: 'An object is labeled True if it is blue or a rectangle.'\n"
         "  Object: 'A BLU TRI' -> Labeled False (consistency: false)\n"
