@@ -31,8 +31,7 @@ Variability: Use random seeds and temperature adjustments to introduce variabili
 Goal: Obtain a sufficient number of correct and incorrect runs (e.g., 3 each per rule) to create multiple combinations for intervention.
 Activation Patching (Intervention):
 
-Intervention Points: Intervene across multiple layers and all token positions in the prompt and initial output tokens, including:
-All tokens in the input prompt, to comprehensively assess the influence of each position, as well as initial output tokens (further output tokens are omitted due to variable length complications). 
+Intervention Points: We intervene on sliding windows of tokens and layers, starting after standard input tokens and continuing up to and including initial output tokens. 
 Swapping Activations: Swap activations from incorrect runs into correct runs at specified layers and token positions.
 Combining Runs: Pair each correct run with each incorrect run, increasing data points per analysis (e.g., 3 correct × 3 incorrect = 9 combinations per rule).
 Analyzing the Results:
