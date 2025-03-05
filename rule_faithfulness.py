@@ -251,9 +251,9 @@ num_layers = model.config.n_layer
 components = ['residual', 'mlp_activation', 'attention_output']
 
 # Sliding window parameters
-token_window_size = 30
-token_step_size = 10
-layer_window_size = 5
+token_window_size = 40
+token_step_size = 20
+layer_window_size = 6
 layer_step_size = 3
 
 # Run the experiment for each rule
