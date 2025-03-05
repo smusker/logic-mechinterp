@@ -207,10 +207,10 @@ num_layers = model.config.n_layer
 components = ['residual', 'mlp_activation', 'attention_output']
 
 # Sliding window parameters
-token_window_size = 16
-token_step_size = 8
-layer_window_size = 4
-layer_step_size = 2
+token_window_size = 30
+token_step_size = 10
+layer_window_size = 5
+layer_step_size = 3
 
 # Number of correct and incorrect runs to collect
 num_correct_runs = 3
