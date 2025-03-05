@@ -200,6 +200,36 @@ def get_output_token_positions(output_sequences, tokenized_prompt,
 
     return tokens, position_names, token_positions
 
+def find_label_token_positions(inputs, label_to_noise):
+    """
+    Find positions of 'True' or 'False' tokens in the tokenized prompt.
+    """
+    label_token_id = tokenizer.convert_tokens_to_ids(label_to_noise)
+    positions = []
+    input_ids = inputs['input_ids'][0]
+    for idx, token_id in enumerate(input_ids):
+        if token_id == label_token_id:
+            positions.append(idx)
+    return positions
+
+def add_noise_to_token_embeddings(inputs, token_positions, noise_level=0.1):
+    """
+    Add Gaussian noise to the embeddings of specific tokens.
+    """
+    with torch.no_grad():
+        embedding_layer = model.transformer.wte  # Word embeddings
+        # Get the original embeddings
+        input_embeddings = embedding_layer(inputs['input_ids'])
+        # Generate noise
+        noise = torch.randn_like(input_embeddings) * noise_level
+        # Add noise to specific token positions
+        for pos in token_positions:
+            input_embeddings[0, pos, :] += noise[0, pos, :]
+        # Replace the input_ids with embeddings
+        inputs['inputs_embeds'] = input_embeddings
+        inputs.pop('input_ids', None)
+    return inputs
+
 # Total number of layers in the model
 num_layers = model.config.n_layer
 
@@ -265,96 +295,123 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         return handles
 
     # Collect necessary correct runs
-    collected_correct_runs = {}
-    runs_needed = num_correct_runs
-    idx = 0
-    while len(collected_correct_runs) < runs_needed and idx < runs_needed * 10:
-        seed = random.randint(0, 10000)
-        set_seed(seed)
-        activations = {}
-        # Capture all layers and components (we will select windows later)
-        handles = register_hooks(activations, list(range(num_layers)), components)
-        # Generate output
+    # Initialize variables to store runs
+    correct_run = None
+    incorrect_run = None
+    
+    # Generate the base prompt and obtain initial model output
+    prompt, inputs, tokenized_prompt, test_object_line, intro_token_length = \
+        generate_prompt_and_get_token_positions(rule_description)
+    inputs = tokenizer(prompt, return_tensors='pt').to(device)
+    
+    # Run the model deterministically
+    with torch.no_grad():
         output_sequences = model.generate(
             input_ids=inputs['input_ids'],
             max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
+            do_sample=False,
+            temperature=0.0,  # Deterministic output
             pad_token_id=tokenizer.pad_token_id,
         )
+    
+    output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
+    assigned_label = label_test_object_in_output(output_text, test_object_line)
+    true_label = label_object(test_object_line, rule_description)
+    
+    # Store the base run activations
+    activations_base = {}
+    # Register hooks to capture activations
+    handles = register_hooks(activations_base, list(range(num_layers)), components)
+    # Forward pass to capture activations
+    with torch.no_grad():
+        model(**inputs)
+    # Remove hooks
+    for handle in handles:
+        handle.remove()
+    
+    # Save the base run
+    if assigned_label is not None:
+        base_run = {
+            'text': output_text,
+            'activations': activations_base,
+            'assigned_label': assigned_label,
+            'rule': extract_rule(output_text),
+            'tokens': tokenizer.convert_ids_to_tokens(inputs['input_ids'][0]),
+            'position_names': [f'Token_{i}' for i in range(inputs['input_ids'].shape[1])],
+            'output_sequences': output_sequences,
+        }
+    
+    # Identify the label to noise (opposite of the assigned label)
+    if assigned_label == 'True':
+        label_to_noise = 'True'
+    else:
+        label_to_noise = 'False'
+    
+    # Find positions of the label tokens in the prompt
+    label_token_positions = find_label_token_positions(inputs, label_to_noise=label_to_noise)
+    
+    # Attempt to flip the output by adding noise
+    flip_obtained = False
+    noise_level = 0.1  # Adjust as needed
+    for pos in label_token_positions:
+        # Create a new input with noise added at position 'pos'
+        inputs_noisy = tokenizer(prompt, return_tensors='pt').to(device)
+        inputs_noisy = add_noise_to_token_embeddings(inputs_noisy, [pos], noise_level=noise_level)
+        # Run the model with the noisy input
+        activations_noisy = {}
+        # Register hooks to capture activations
+        handles = register_hooks(activations_noisy, list(range(num_layers)), components)
+        # Generate output
+        with torch.no_grad():
+            output_sequences_noisy = model.generate(
+                inputs_embeds=inputs_noisy['inputs_embeds'],
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=0.0,
+                pad_token_id=tokenizer.pad_token_id,
+            )
         # Remove hooks
         for handle in handles:
             handle.remove()
-        output_text = tokenizer.decode(
-            output_sequences[0], skip_special_tokens=True
-        )
-        assigned_label = label_test_object_in_output(
-            output_text, test_object_line
-        )
-        true_label = label_object(test_object_line, rule_description)
-        if assigned_label == true_label and assigned_label is not None:
-            # Get combined tokens and positions
-            tokens, position_names, token_positions = \
-                get_output_token_positions(
-                    output_sequences, tokenized_prompt, max_new_tokens
-                )
-            collected_correct_runs[idx] = {
-                'text': output_text,
-                'activations': activations,
-                'assigned_label': assigned_label,
-                'rule': extract_rule(output_text),
-                'tokens': tokens,
-                'position_names': position_names,
-                'token_positions': token_positions,
-                'output_sequences': output_sequences,
+        # Decode the output
+        output_text_noisy = tokenizer.decode(output_sequences_noisy[0], skip_special_tokens=True)
+        assigned_label_noisy = label_test_object_in_output(output_text_noisy, test_object_line)
+    
+        # Check if the categorization output has flipped
+        if assigned_label_noisy != assigned_label and assigned_label_noisy is not None:
+            flip_obtained = True
+            break  # Exit the loop once the flip is obtained
+    
+    if not flip_obtained:
+        # Optionally, try increasing noise level or adding noise to more tokens
+        log_file.write(f"Could not flip the output by adding noise to '{label_to_noise}' tokens.\n")
+        continue  # Skip to the next rule or handle this case accordingly
+    else:
+        # Save the runs
+        if assigned_label == true_label:
+            correct_run = base_run
+            incorrect_run = {
+                'text': output_text_noisy,
+                'activations': activations_noisy,
+                'assigned_label': assigned_label_noisy,
+                'rule': extract_rule(output_text_noisy),
+                'tokens': tokenizer.convert_ids_to_tokens(inputs_noisy['inputs_embeds'].argmax(dim=-1)[0]),
+                'position_names': [f'Token_{i}' for i in range(inputs_noisy['inputs_embeds'].shape[1])],
+                'output_sequences': output_sequences_noisy,
             }
-        idx += 1
+        else:
+            incorrect_run = base_run
+            correct_run = {
+                'text': output_text_noisy,
+                'activations': activations_noisy,
+                'assigned_label': assigned_label_noisy,
+                'rule': extract_rule(output_text_noisy),
+                'tokens': tokenizer.convert_ids_to_tokens(inputs_noisy['inputs_embeds'].argmax(dim=-1)[0]),
+                'position_names': [f'Token_{i}' for i in range(inputs_noisy['inputs_embeds'].shape[1])],
+                'output_sequences': output_sequences_noisy,
+            }
 
-    # Collect necessary incorrect runs
-    collected_incorrect_runs = {}
-    runs_needed = num_incorrect_runs
-    idx = 0
-    while len(collected_incorrect_runs) < runs_needed and idx < runs_needed * 10:
-        seed = random.randint(0, 10000)
-        set_seed(seed)
-        activations = {}
-        # Capture all layers and components (we will select windows later)
-        handles = register_hooks(activations, list(range(num_layers)), components)
-        # Generate output
-        output_sequences = model.generate(
-            input_ids=inputs['input_ids'],
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=1.0,
-            pad_token_id=tokenizer.pad_token_id,
-        )
-        # Remove hooks
-        for handle in handles:
-            handle.remove()
-        output_text = tokenizer.decode(
-            output_sequences[0], skip_special_tokens=True
-        )
-        assigned_label = label_test_object_in_output(
-            output_text, test_object_line
-        )
-        true_label = label_object(test_object_line, rule_description)
-        if assigned_label is not None and assigned_label != true_label:
-            # Get combined tokens and positions
-            tokens, position_names, token_positions = \
-                get_output_token_positions(
-                    output_sequences, tokenized_prompt, max_new_tokens
-                )
-            collected_incorrect_runs[idx] = {
-                'text': output_text,
-                'activations': activations,
-                'assigned_label': assigned_label,
-                'rule': extract_rule(output_text),
-                'tokens': tokens,
-                'position_names': position_names,
-                'token_positions': token_positions,
-                'output_sequences': output_sequences,
-            }
-        idx += 1
+    #Do we still need this check?
 
     # Check if all required runs were collected
     if len(collected_correct_runs) < num_correct_runs or \
