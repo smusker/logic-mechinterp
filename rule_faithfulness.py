@@ -14,7 +14,8 @@ from pyvene import (
     RepresentationConfig,
     VanillaIntervention,
 )
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, set_seed
+import transformers
+from transformers import LlamaTokenizer, LlamaForCausalLM
 import numpy as np
 import random
 from tqdm import tqdm
@@ -25,12 +26,11 @@ import pandas as pd
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load the model and tokenizer
-# Replace 'gpt2' with a capable model (e.g., 'gpt2-xl' or a larger model)
-tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-tokenizer.pad_token = tokenizer.eos_token  # Ensure padding token exists
-model = GPT2LMHeadModel.from_pretrained('gpt2')
-model.to(device)
+# Load LLaMA 3.1 8B
+model_id = "meta-llama/Llama-3.1-8B"
+tokenizer = LlamaTokenizer.from_pretrained(model_id)
+model = LlamaForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto")
+model.to("cuda" if torch.cuda.is_available() else "cpu")
 model.eval()
 
 # Set random seeds for reproducibility
@@ -196,9 +196,10 @@ def get_activation_capturer(activations_dict, key):
 def register_hooks(activations, layer_nums, components_to_capture):
     handles = []
     for layer_num in layer_nums:
-        layer = model.transformer.h[layer_num]
+        layer = model.model.layers[layer_num]  # Adjust reference for LLaMA
         for component in components_to_capture:
             key = (component, layer_num)
+            # Set up the hooks based on LLaMA architecture
             if component == 'residual':
                 handle = layer.register_forward_hook(
                     get_activation_capturer(activations, key)
@@ -208,11 +209,12 @@ def register_hooks(activations, layer_nums, components_to_capture):
                     get_activation_capturer(activations, key)
                 )
             elif component == 'attention_output':
-                handle = layer.attn.register_forward_hook(
+                handle = layer.self_attn.register_forward_hook(  # Adjust for LLaMA
                     get_activation_capturer(activations, key)
                 )
             handles.append(handle)
     return handles
+
 
 def find_label_token_positions(inputs, label_to_noise):
     """
