@@ -25,10 +25,9 @@ Fixed Label Pattern: Use a predetermined label pattern (e.g., 'False', 'True', '
 Consistent Instructions: The instructional text and prompt structure remain the same for all runs.
 Collecting Multiple Runs:
 
-Correct Runs: Generate multiple runs where the model correctly categorizes the test object and provides the correct rule explanation.
-Incorrect Runs: Generate multiple runs where the model incorrectly categorizes the test object and provides an incorrect rule explanation.
-Variability: Use random seeds and temperature adjustments to introduce variability in the model's outputs.
-Goal: Obtain a sufficient number of correct and incorrect runs (e.g., 3 each per rule) to create multiple combinations for intervention.
+Correct Run: Generate a run where the model gives a categorization and then a rule. 
+Incorrect Run: Selectively noise input tokens corresponding to the original output categorization until the categorization flips. We now have a flipped categorization followed by a rule. 
+Goal: Obtain contrasting runs (e.g., 3 each per rule) to create pairs for intervention.
 Activation Patching (Intervention):
 
 Intervention Points: We intervene on sliding windows of tokens and layers, starting after standard input tokens and continuing up to and including initial output tokens. 
