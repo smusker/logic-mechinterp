@@ -30,7 +30,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model_id = "meta-llama/Llama-3.1-8B"
 tokenizer = LlamaTokenizer.from_pretrained(model_id)
 model = LlamaForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto")
-model.to("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
 model.eval()
 
 # Set random seeds for reproducibility
@@ -135,6 +135,13 @@ def label_test_object_in_output(output_text, test_object_line):
                         next_line = lines[i + 1].strip()
                         if next_line in ['True', 'False']:
                             return next_line
+            # In case the model rephrases the test object line
+            elif 'Shape=' in line and 'Color=' in line and 'Size=' in line:
+                parts = line.split('->')
+                if len(parts) == 2:
+                    assigned_label = parts[1].strip().split()[0]
+                    if assigned_label in ['True', 'False']:
+                        return assigned_label
         return None  # Label not found
     except Exception:
         return None
@@ -233,7 +240,7 @@ def add_noise_to_token_embeddings(inputs, token_positions, noise_level=0.1):
     Add Gaussian noise to the embeddings of specific tokens.
     """
     with torch.no_grad():
-        embedding_layer = model.transformer.wte  # Word embeddings
+        embedding_layer = model.model.embed_tokens  # Update for LLaMA
         # Get the original embeddings
         input_embeddings = embedding_layer(inputs['input_ids'])
         # Generate noise
@@ -247,7 +254,7 @@ def add_noise_to_token_embeddings(inputs, token_positions, noise_level=0.1):
     return inputs
 
 # Total number of layers in the model
-num_layers = model.config.n_layer
+num_layers = model.config.num_hidden_layers
 
 # Components to intervene on
 components = ['residual', 'mlp_activation', 'attention_output']
@@ -257,6 +264,9 @@ token_window_size = 40
 token_step_size = 20
 layer_window_size = 6
 layer_step_size = 3
+
+# Proportion of interventions to perform
+intervention_proportion = 0.01  # Adjust this value as needed (e.g., 0.5 for 50%)
 
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
@@ -434,6 +444,10 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         for comp_idx, component in enumerate(components):
             for layer_win_idx, (layer_start, layer_end) in enumerate(layer_windows):
                 for token_win_idx, (token_start, token_end) in enumerate(token_windows):
+
+                    # Decide whether to perform this intervention based on the proportion
+                    if random.random() > intervention_proportion:
+                        continue  # Skip this intervention
 
                     # Prepare activations to swap
                     key_range = []
