@@ -1,0 +1,4 @@
+
+--- Processing Rule1: An object is labeled 'True' if it is BLU or a REC. ---
+
+Could not flip the output by adding noise to 'False' tokens.

@@ -1,3 +1,13 @@
+Set up and run: 
+
+start logic_env
+salloc -J interact -p 3090-gcondo -N 1-1 -n 1 --time 01:00:00 --gpus 3 --cpus-per-task 2 --mem 80G
+pip install -r requirements.txt
+export OPENAI_API_KEY=...
+pip install huggingface_hub
+huggingface-cli login
+enter token
+
 # logic-mechinterp
 
 Rule elicitation faithfulness experiment: Do rule elicitations and inferences come from the same underlying representation?
@@ -58,6 +68,22 @@ Collecting Multiple Runs for Data Robustness:
 
 Increases the reliability of results by enhancing statistical significance.
 Variability control through random seeds and temperature settings provides necessary diversity in model outputs without altering the prompt structure.
+
+Note:
+
+Change and Reason:
+
+Removed device_map="auto" to keep the model on a single device. Using inputs_embeds with model.generate() is incompatible with sharded models, causing device mismatch errors.
+Future Consideration:
+
+Larger models may require multi-GPU support for memory and computation.
+Alternate Multi-GPU Solutions:
+
+Avoid inputs_embeds with model.generate(), using input_ids instead.
+Ensure tensors are correctly placed across devices.
+Use Accelerate, DeepSpeed, or FairScale for parallelism.
+Apply gradient checkpointing to reduce memory use.
+These changes enable multi-GPU use while maintaining intervention compatibility.
 
 **********************************//////////////////////******************************************
 

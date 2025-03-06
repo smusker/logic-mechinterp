@@ -1,0 +1,4 @@
+
+--- Processing Rule3: An object is labeled 'True' if it is RED and not an SQR. ---
+
+Could not flip the output by adding noise to 'False' tokens.

@@ -1,0 +1,4 @@
+
+--- Processing Rule2: An object is labeled 'True' if it is not a CIR. ---
+
+Could not flip the output by adding noise to 'False' tokens.

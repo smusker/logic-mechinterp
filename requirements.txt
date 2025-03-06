@@ -1,0 +1,10 @@
+torch
+transformers
+git+https://github.com/stanfordnlp/pyvene.git
+numpy
+pandas
+matplotlib
+tqdm
+openai
+nnsight
+sentencepiece

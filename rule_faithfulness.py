@@ -1,10 +1,12 @@
 from utilities import compare_rules, assess_rule_consistency
 
 # Install Pyvene if not already installed
+"""
 try:
     import pyvene
 except ModuleNotFoundError:
     !pip install git+https://github.com/stanfordnlp/pyvene.git
+"""
 
 # Import necessary modules
 import torch
@@ -15,7 +17,7 @@ from pyvene import (
     VanillaIntervention,
 )
 import transformers
-from transformers import LlamaTokenizer, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 import random
 from tqdm import tqdm
@@ -26,10 +28,14 @@ import pandas as pd
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load LLaMA 3.1 8B
+# Load LLaMA 3.1 8B using Auto classes
 model_id = "meta-llama/Llama-3.1-8B"
-tokenizer = LlamaTokenizer.from_pretrained(model_id)
-model = LlamaForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype=torch.bfloat16,
+    #device_map="auto" #(removed as code expects model to be on one device)
+)
 model.to(device)
 model.eval()
 
@@ -197,7 +203,14 @@ def get_activation_capturer(activations_dict, key):
     def capturer(module, input, output):
         if key not in activations_dict:
             activations_dict[key] = []
-        activations_dict[key].append(output.detach())
+        # Check if output is a tuple
+        if isinstance(output, tuple):
+            # Extract the tensor you want to capture
+            output_to_save = output[0]
+        else:
+            output_to_save = output
+        # Detach and save the output
+        activations_dict[key].append(output_to_save.detach())
     return capturer
 
 def register_hooks(activations, layer_nums, components_to_capture):
@@ -260,13 +273,13 @@ num_layers = model.config.num_hidden_layers
 components = ['residual', 'mlp_activation', 'attention_output']
 
 # Sliding window parameters
-token_window_size = 40
-token_step_size = 20
-layer_window_size = 6
-layer_step_size = 3
+token_window_size = 80
+token_step_size = 40
+layer_window_size = 12
+layer_step_size = 6
 
 # Proportion of interventions to perform
-intervention_proportion = 0.01  # Adjust this value as needed (e.g., 0.5 for 50%)
+intervention_proportion = 0.05  # Adjust this value as needed (e.g., 0.5 for 50%)
 
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
