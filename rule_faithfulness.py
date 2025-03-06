@@ -279,7 +279,7 @@ layer_window_size = 12
 layer_step_size = 6
 
 # Proportion of interventions to perform
-intervention_proportion = 0.05  # Adjust this value as needed (e.g., 0.5 for 50%)
+intervention_proportion = 0.1 # Adjust this value as needed (e.g., 0.5 for 50%)
 
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
@@ -347,7 +347,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
 
     # Attempt to flip the output by adding noise
     flip_obtained = False
-    noise_level = 0.1  # Adjust as needed
+    noise_level = 0.3  # Adjust as needed
     for pos in label_token_positions:
         # Create a new input with noise added at position 'pos'
         inputs_noisy = tokenizer(prompt, return_tensors='pt').to(device)
