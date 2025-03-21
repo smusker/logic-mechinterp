@@ -1,626 +1,577 @@
-# Install required libraries if not already installed
-try:
-    import pyvene
-except ImportError:
-    !pip install git+https://github.com/stanfordnlp/pyvene.git
-
-try:
-    import transformers
-except ImportError:
-    !pip install transformers
-
-try:
-    import datasets
-except ImportError:
-    !pip install datasets
-
-try:
-    from tqdm import tqdm
-except ImportError:
-    !pip install tqdm
-
-# Import necessary modules
-import torch
+import sys
+import os
+import random
 import numpy as np
-from pyvene import BoundlessRotatedSpaceIntervention
-from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
+import torch
+import matplotlib.pyplot as plt
+from tqdm import tqdm
 from datasets import Dataset
 from torch.utils.data import DataLoader
-from tqdm import tqdm
-import random
-
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Load instruction-tuned model and tokenizer
-# Replace 'your_instruction_tuned_model' with the actual model name you want to use
-model_name = 'tiiuae/falcon-7b-instruct'  # Example instruction-tuned LLM
-
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token  # Ensure there is a pad token
-
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.float16,
-    device_map='auto'
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    set_seed,
 )
-model.to(device)
-model.eval()
+try:
+    from pyvene import BoundlessRotatedSpaceIntervention
+except ImportError:
+    !pip install git+https://github.com/stanfordnlp/pyvene.git
+    from pyvene import BoundlessRotatedSpaceIntervention
 
-# Set random seeds for reproducibility
+###############################################################################
+# EXPERIMENT 2: BOUNDLESS DAS WITH INSTRUCTION-TUNED LLAMA 3.1 8B
+###############################################################################
+
+# Model name
+MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
+
+# Set random seeds
 set_seed(42)
 random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
 
-# Define object attributes and abbreviations
-colors = ['yellow', 'blue', 'green']
-shapes = ['circle', 'triangle', 'rectangle']
+# Device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-color_abbr = {'yellow': 'yel', 'blue': 'blu', 'green': 'grn'}
-shape_abbr = {'circle': 'cir', 'triangle': 'tri', 'rectangle': 'rec'}
+# Load model
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.float16,
+    device_map="auto"
+)
+model.to(device)
+model.eval()
 
-# Logical rule: "yellow XOR circle"
+###############################################################################
+# DEFINE LOGICAL TASK (XOR EXAMPLE), DATA GENERATION, AND DATASET PREP
+###############################################################################
+
+colors = ["yellow", "blue", "green"]
+shapes = ["circle", "triangle", "rectangle"]
+color_abbr = {"yellow": "yel", "blue": "blu", "green": "grn"}
+shape_abbr = {"circle": "cir", "triangle": "tri", "rectangle": "rec"}
+
 def rule_eval(color, shape):
-    return (color == 'yellow') ^ (shape == 'circle')
+    return (color == "yellow") ^ (shape == "circle")
 
-# High-level causal model A: XOR as a unitary operation
 def causal_model_a(color, shape):
-    return (color == 'yellow') ^ (shape == 'circle')
+    return (color == "yellow") ^ (shape == "circle")
 
-# High-level causal model B: XOR decomposed into OR, AND, NOT
 def causal_model_b(color, shape):
-    color_is_yellow = color == 'yellow'
-    shape_is_circle = shape == 'circle'
-    result = (color_is_yellow or shape_is_circle) and not (color_is_yellow and shape_is_circle)
-    return result
+    c_yel = (color == "yellow")
+    s_cir = (shape == "circle")
+    return (c_yel or s_cir) and not (c_yel and s_cir)
 
-# Function to generate fixed-length prompts and targets
-def generate_prompt_and_target():
+def build_prompt_and_labels(objects):
     intro = (
         "We will use 'yel' for yellow, 'blu' for blue, 'grn' for green.\n"
         "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n\n"
     )
-
-    prompt = (
+    prompt_text = (
         "Learn the secret rule to label the objects correctly. "
-        "If an object follows the rule, it should be labeled 'True'. Otherwise, 'False'. "
-        "Be concise and always follow the arrow '->' with an object's label.\n\n"
+        "If an object follows the rule, it should be labeled 'True'. "
+        "Otherwise, 'False'. Be concise and always follow the arrow '->' "
+        "with an object's label.\n\n"
         "Label the following objects:\n"
     )
-
-    # Generate objects
-    num_objects = 5  # Fixed number to keep prompt length constant
-    objects = []
-    labels = []
-    for _ in range(num_objects):
-        color = random.choice(colors)
-        shape = random.choice(shapes)
+    obj_lines = []
+    lab_lines = []
+    for color, shape in objects:
         obj_str = f"- {color_abbr[color]} {shape_abbr[shape]}"
-        label = 'True' if rule_eval(color, shape) else 'False'
-        objects.append(obj_str)
-        labels.append(f"{obj_str} -> {label}")
+        label = "True" if rule_eval(color, shape) else "False"
+        obj_lines.append(obj_str)
+        lab_lines.append(f"{obj_str} -> {label}")
+    full_prompt = intro + prompt_text + "\n".join(obj_lines) + "\n"
+    full_target = "\n".join(lab_lines) + "\n"
+    return full_prompt, full_target
 
-    # Combine prompt and target
-    full_prompt = intro + prompt + "\n".join(objects) + "\n"
-    full_target = "\n".join(labels) + "\n"
-
-    # Tokenize
-    inputs = tokenizer(full_prompt, return_tensors='pt')
-    targets = tokenizer(full_target, return_tensors='pt')
-
-    # Combine inputs and labels
-    input_ids = torch.cat([inputs['input_ids'], targets['input_ids']], dim=1)
+def generate_example(num_objects=5):
+    objs = []
+    for _ in range(num_objects):
+        c = random.choice(colors)
+        s = random.choice(shapes)
+        objs.append((c, s))
+    prompt, target = build_prompt_and_labels(objs)
+    enc_prompt = tokenizer(prompt, return_tensors="pt")
+    enc_target = tokenizer(target, return_tensors="pt")
+    input_ids = torch.cat([enc_prompt["input_ids"], enc_target["input_ids"]], dim=1).squeeze()
     attention_mask = torch.ones_like(input_ids)
     labels = input_ids.clone()
-    labels[:, :inputs['input_ids'].shape[1]] = -100  # Mask out the prompt
-
+    labels[: enc_prompt["input_ids"].shape[1]] = -100
     return {
-        'input_ids': input_ids.squeeze(),
-        'attention_mask': attention_mask.squeeze(),
-        'labels': labels.squeeze()
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
     }
 
-# Generate dataset
-num_examples = 20000  # Adjust as needed
-data = [generate_prompt_and_target() for _ in tqdm(range(num_examples), desc="Generating dataset")]
+def pad_seq(seq, max_len, pad_token_id, label_pad=-100):
+    need = max_len - seq.size(0)
+    if need <= 0:
+        return seq
+    if label_pad == -100:
+        padvec = torch.full((need,), pad_token_id, dtype=seq.dtype)
+        return torch.cat([seq, padvec], dim=0)
+    else:
+        padvec = torch.full((need,), label_pad, dtype=seq.dtype)
+        return torch.cat([seq, padvec], dim=0)
 
-# Ensure all sequences are of the same length
-max_length = max(len(d['input_ids']) for d in data)
+num_samples = 20000
+data_list = []
+for _ in tqdm(range(num_samples), desc="Generating dataset"):
+    ex = generate_example()
+    data_list.append(ex)
 
-def pad_sequence(seq, max_length):
-    return torch.cat([seq, torch.full((max_length - len(seq),), tokenizer.pad_token_id, dtype=torch.long)])
+max_len = max(d["input_ids"].size(0) for d in data_list)
+for d in data_list:
+    d["input_ids"] = pad_seq(d["input_ids"], max_len, tokenizer.pad_token_id)
+    d["attention_mask"] = pad_seq(d["attention_mask"], max_len, 0)
+    d["labels"] = pad_seq(d["labels"], max_len, -100, label_pad=-100)
 
-def pad_attention(seq, max_length):
-    return torch.cat([seq, torch.zeros(max_length - len(seq), dtype=torch.long)])
-
-def pad_labels(seq, max_length):
-    return torch.cat([seq, torch.full((max_length - len(seq),), -100, dtype=torch.long)])
-
-# Pad sequences
-for d in data:
-    d['input_ids'] = pad_sequence(d['input_ids'], max_length)
-    d['attention_mask'] = pad_attention(d['attention_mask'], max_length)
-    d['labels'] = pad_labels(d['labels'], max_length)
-
-# Create HuggingFace dataset
 dataset = Dataset.from_dict({
-    'input_ids': [d['input_ids'].tolist() for d in data],
-    'attention_mask': [d['attention_mask'].tolist() for d in data],
-    'labels': [d['labels'].tolist() for d in data]
+    "input_ids": [d["input_ids"].tolist() for d in data_list],
+    "attention_mask": [d["attention_mask"].tolist() for d in data_list],
+    "labels": [d["labels"].tolist() for d in data_list]
 })
-
-# Split into training and validation sets
 split_data = dataset.train_test_split(test_size=0.1, seed=42)
-train_dataset = split_data['train']
-valid_dataset = split_data['test']
-
-# Set format for PyTorch tensors
-train_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
-valid_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
-
-# Create DataLoaders
+train_data = split_data["train"]
+val_data = split_data["test"]
+train_data.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+val_data.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 batch_size = 8
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-valid_loader = DataLoader(valid_dataset, batch_size=batch_size)
+train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False)
 
-# Since we're not fine-tuning, we can proceed to evaluate the model's performance on the validation set
-# Evaluate model performance
+###############################################################################
+# QUICK EVAL OF MODEL
+###############################################################################
 model.eval()
-total = 0
-correct = 0
+total_toks = 0
+correct_toks = 0
 with torch.no_grad():
-    for batch in tqdm(valid_loader, desc="Evaluating the model"):
-        input_ids = batch['input_ids'].to(device)
-        attention_mask = batch['attention_mask'].to(device)
-        labels = batch['labels'].to(device)
+    for batch in tqdm(val_loader, desc="Evaluating base model"):
+        in_ids = batch["input_ids"].to(device)
+        attn = batch["attention_mask"].to(device)
+        lbls = batch["labels"].to(device)
+        out = model(in_ids, attention_mask=attn)
+        logits = out.logits
+        preds = torch.argmax(logits, dim=-1)
+        mask = (lbls != -100)
+        total_toks += mask.sum().item()
+        correct_toks += ((preds == lbls) & mask).sum().item()
+baseline_acc = correct_toks / total_toks
+print(f"Base model token-level accuracy: {baseline_acc:.4f}")
 
-        outputs = model(input_ids, attention_mask=attention_mask)
-        logits = outputs.logits
+###############################################################################
+# BOUNDLESS DAS SETUP: GENERATING INTERVENTION PAIRS
+###############################################################################
 
-        # Get predictions
-        predictions = torch.argmax(logits, dim=-1)
+def build_intervention_pair(cfunc):
+    c1 = random.choice(colors)
+    s1 = random.choice(shapes)
+    c2 = random.choice(colors)
+    s2 = random.choice(shapes)
+    while (c2 == c1 and s2 == s1):
+        c2 = random.choice(colors)
+        s2 = random.choice(shapes)
 
-        # Calculate accuracy
-        mask = (labels != -100)
-        total += mask.sum().item()
-        correct += ((predictions == labels) & mask).sum().item()
+    label1 = "True" if cfunc(c1, s1) else "False"
+    label2 = "True" if cfunc(c2, s2) else "False"
 
-accuracy = correct / total
-print(f"\nModel accuracy: {accuracy:.4f}")
-
-# Proceed to Boundless DAS training
-# Freeze the language model parameters for Boundless DAS training
-for param in model.parameters():
-    param.requires_grad = False
-
-# Function to generate intervention data
-def generate_intervention_data(num_examples, causal_model_func):
-    intervention_data = []
-    for _ in tqdm(range(num_examples), desc="Generating intervention data"):
-        # Base example
-        color_base = random.choice(colors)
-        shape_base = random.choice(shapes)
-        label_base = 'True' if causal_model_func(color_base, shape_base) else 'False'
-
-        # Source example
-        while True:
-            color_source = random.choice(colors)
-            shape_source = random.choice(shapes)
-            if color_source != color_base or shape_source != shape_base:
-                break
-        label_source = 'True' if causal_model_func(color_source, shape_source) else 'False'
-
-        # Ensure consistent object formatting
-        def create_object_description(color, shape):
-            return f"- {color_abbr[color]} {shape_abbr[shape]}"
-
-        obj_base = create_object_description(color_base, shape_base)
-        obj_source = create_object_description(color_source, shape_source)
-
-        # Create prompts and targets
+    def to_prompt_and_target(cc, ss, ll):
         intro = (
             "We will use 'yel' for yellow, 'blu' for blue, 'grn' for green.\n"
             "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n\n"
-        )
-        prompt = (
             "Learn the secret rule to label the objects correctly. "
-            "If an object follows the rule, it should be labeled 'True'. Otherwise, 'False'. "
-            "Be concise and always follow the arrow '->' with an object's label.\n\n"
-            "Label the following object:\n"
+            "If an object follows the rule, it should be labeled 'True'. Otherwise, 'False'.\n\n"
+            "Label this object:\n"
         )
+        obj_line = f"- {color_abbr[cc]} {shape_abbr[ss]}"
+        full_prompt = intro + obj_line + "\n"
+        full_target = f"{obj_line} -> {ll}\n"
+        enc_p = tokenizer(full_prompt, return_tensors="pt")
+        enc_t = tokenizer(full_target, return_tensors="pt")
+        in_ids = torch.cat([enc_p["input_ids"], enc_t["input_ids"]], dim=1).squeeze(0)
+        attn = torch.ones_like(in_ids)
+        lab = in_ids.clone()
+        lab[: enc_p["input_ids"].size(1)] = -100
+        return in_ids, attn, lab
 
-        full_prompt_base = intro + prompt + obj_base + "\n"
-        full_target_base = f"{obj_base} -> {label_base}\n"
+    ib, ab, lb = to_prompt_and_target(c1, s1, label1)
+    isrc, asrc, lsrc = to_prompt_and_target(c1, s1, label2)
+    return {
+        "input_ids_base": ib,
+        "attn_base": ab,
+        "labels_base": lb,
+        "input_ids_source": isrc,
+        "attn_source": asrc,
+        "labels_source": lsrc
+    }
 
-        full_prompt_source = intro + prompt + obj_base + "\n"
-        full_target_source = f"{obj_base} -> {label_source}\n"
-
-        # Tokenize base and source
-        inputs_base = tokenizer(full_prompt_base, return_tensors='pt')
-        targets_base = tokenizer(full_target_base, return_tensors='pt')
-
-        inputs_source = tokenizer(full_prompt_source, return_tensors='pt')
-        targets_source = tokenizer(full_target_source, return_tensors='pt')
-
-        # Combine inputs and labels
-        input_ids_base = torch.cat([inputs_base['input_ids'], targets_base['input_ids']], dim=1)
-        attention_mask_base = torch.ones_like(input_ids_base)
-        labels_base = input_ids_base.clone()
-        labels_base[:, :inputs_base['input_ids'].shape[1]] = -100  # Mask out the prompt
-
-        input_ids_source = torch.cat([inputs_source['input_ids'], targets_source['input_ids']], dim=1)
-        attention_mask_source = torch.ones_like(input_ids_source)
-        labels_source = input_ids_source.clone()
-        labels_source[:, :inputs_source['input_ids'].shape[1]] = -100  # Mask out the prompt
-
-        # Record token positions for variables
-        def get_variable_positions(input_ids):
-            color_tokens = [tokenizer.encode(abbr, add_special_tokens=False)[0] for abbr in color_abbr.values()]
-            shape_tokens = [tokenizer.encode(abbr, add_special_tokens=False)[0] for abbr in shape_abbr.values()]
-            positions = []
-            for i, id in enumerate(input_ids.squeeze().tolist()):
-                if id in color_tokens + shape_tokens:
-                    positions.append(i)
-            return positions
-
-        positions_base = get_variable_positions(inputs_base['input_ids'])
-        positions_source = get_variable_positions(inputs_source['input_ids'])
-        # Ensure positions are aligned
-        if positions_base != positions_source:
-            continue  # Skip this example if positions don't align
-
-        intervention_data.append({
-            'input_ids_base': input_ids_base.squeeze(),
-            'attention_mask_base': attention_mask_base.squeeze(),
-            'labels_base': labels_base.squeeze(),
-            'input_ids_source': input_ids_source.squeeze(),
-            'attention_mask_source': attention_mask_source.squeeze(),
-            'labels_source': labels_source.squeeze(),
-            'positions': positions_base
-        })
-    return intervention_data
-
-# Generate intervention data for both causal models
-intervention_examples = 10000  # Adjust as needed
-
-# For Causal Model A
-intervention_data_a = generate_intervention_data(intervention_examples, causal_model_a)
-
-# For Causal Model B
-intervention_data_b = generate_intervention_data(intervention_examples, causal_model_b)
-
-# Function to prepare intervention data
-def prepare_intervention_data(intervention_data):
-    # Ensure sequences are of the same length
-    max_length_base = max(len(d['input_ids_base']) for d in intervention_data)
-    max_length_source = max(len(d['input_ids_source']) for d in intervention_data)
-    max_length = max(max_length_base, max_length_source)
-
-    # Pad intervention data
-    for d in intervention_data:
-        d['input_ids_base'] = pad_sequence(d['input_ids_base'], max_length)
-        d['attention_mask_base'] = pad_attention(d['attention_mask_base'], max_length)
-        d['labels_base'] = pad_labels(d['labels_base'], max_length)
-        d['input_ids_source'] = pad_sequence(d['input_ids_source'], max_length)
-        d['attention_mask_source'] = pad_attention(d['attention_mask_source'], max_length)
-        d['labels_source'] = pad_labels(d['labels_source'], max_length)
-        d['positions'] = d['positions']  # Keep positions as is
-
-    # Create intervention Dataset and DataLoader
-    intervention_dataset = Dataset.from_dict({
-        'input_ids_base': [d['input_ids_base'].tolist() for d in intervention_data],
-        'attention_mask_base': [d['attention_mask_base'].tolist() for d in intervention_data],
-        'labels_base': [d['labels_base'].tolist() for d in intervention_data],
-        'input_ids_source': [d['input_ids_source'].tolist() for d in intervention_data],
-        'attention_mask_source': [d['attention_mask_source'].tolist() for d in intervention_data],
-        'labels_source': [d['labels_source'].tolist() for d in intervention_data],
-        'positions': [d['positions'] for d in intervention_data]
+def prep_intervention_data(cmodel_func, n=10000):
+    store = []
+    for _ in tqdm(range(n), desc="Building intervention data"):
+        ex = build_intervention_pair(cmodel_func)
+        store.append(ex)
+    # Pad
+    maxl = 0
+    for e in store:
+        maxl = max(maxl, e["input_ids_base"].size(0), e["input_ids_source"].size(0))
+    for e in store:
+        e["input_ids_base"] = pad_seq(e["input_ids_base"], maxl, tokenizer.pad_token_id)
+        e["attn_base"] = pad_seq(e["attn_base"], maxl, 0)
+        e["labels_base"] = pad_seq(e["labels_base"], maxl, -100, label_pad=-100)
+        e["input_ids_source"] = pad_seq(e["input_ids_source"], maxl, tokenizer.pad_token_id)
+        e["attn_source"] = pad_seq(e["attn_source"], maxl, 0)
+        e["labels_source"] = pad_seq(e["labels_source"], maxl, -100, label_pad=-100)
+    ds = Dataset.from_dict({
+        "input_ids_base": [x["input_ids_base"].tolist() for x in store],
+        "attn_base": [x["attn_base"].tolist() for x in store],
+        "labels_base": [x["labels_base"].tolist() for x in store],
+        "input_ids_source": [x["input_ids_source"].tolist() for x in store],
+        "attn_source": [x["attn_source"].tolist() for x in store],
+        "labels_source": [x["labels_source"].tolist() for x in store]
     })
-
-    intervention_dataset.set_format(type='torch', columns=[
-        'input_ids_base', 'attention_mask_base', 'labels_base',
-        'input_ids_source', 'attention_mask_source', 'labels_source',
-        'positions'
+    ds.set_format(type="torch", columns=[
+        "input_ids_base","attn_base","labels_base",
+        "input_ids_source","attn_source","labels_source"
     ])
+    loader = DataLoader(ds, batch_size=8)
+    return loader
 
-    intervention_loader = DataLoader(intervention_dataset, batch_size=batch_size)
-    return intervention_loader
+loader_a = prep_intervention_data(causal_model_a, n=10000)
+loader_b = prep_intervention_data(causal_model_b, n=10000)
 
-# Prepare intervention data loaders
-intervention_loader_a = prepare_intervention_data(intervention_data_a)
-intervention_loader_b = prepare_intervention_data(intervention_data_b)
+for param in model.parameters():
+    param.requires_grad = False
 
-# Training Boundless DAS on intervention data for Causal Model A
-intervention_layers = [0, 5, 10, 15, 20, 25, 30]  # Adjust layers to align with Alpaca
+###############################################################################
+# TRAINING BOUNDLESS DAS FOR Causal Model A
+###############################################################################
 
-# Initialize separate optimizer and scheduler for Boundless DAS training
-subspace_proj_a = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size)
-subspace_proj_a.to(device)
-optimizer_a = torch.optim.Adam([
-    {'params': subspace_proj_a.rotate_layer.parameters()},
-    {'params': subspace_proj_a.intervention_boundaries, 'lr': 1e-2}
-], lr=1e-3)
-total_steps = len(intervention_loader_a) * epochs
-scheduler_a = torch.optim.lr_scheduler.LinearLR(optimizer_a, total_iters=total_steps)
+layers_to_intervene = [0, 5, 10, 15, 20, 25, 30]
+epochs = 2
+subspace_proj_a = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size).to(device)
+opt_a = torch.optim.Adam([
+    {"params": subspace_proj_a.rotate_layer.parameters()},
+    {"params": subspace_proj_a.intervention_boundaries, "lr":1e-2}],
+    lr=1e-3
+)
 
-# Temperature schedule for boundary masks
-temperature_start = 50.0
-temperature_end = 0.1
-temperature_schedule = torch.linspace(temperature_start, temperature_end, total_steps)
+total_steps_a = len(loader_a)*epochs
+scheduler_a = torch.optim.lr_scheduler.LinearLR(opt_a, start_factor=1.0, end_factor=0.0, total_iters=total_steps_a)
+temp_start, temp_end = 50.0, 0.1
+temp_schedule_a = torch.linspace(temp_start, temp_end, total_steps_a)
 
-print("\nTraining Boundless DAS for Causal Model A...")
-step = 0
-for epoch in range(epochs):
-    subspace_proj_a.train()
-    pbar = tqdm(intervention_loader_a, desc=f"Intervention Epoch {epoch+1}/{epochs} (Model A)")
+step_count = 0
+subspace_proj_a.train()
+for ep in range(epochs):
+    pbar = tqdm(loader_a, desc=f"Boundless DAS (Model A) Epoch {ep+1}/{epochs}")
     for batch in pbar:
-        optimizer_a.zero_grad()
-
-        # Move data to device
-        input_ids_base = batch['input_ids_base'].to(device)
-        attention_mask_base = batch['attention_mask_base'].to(device)
-        labels_source = batch['labels_source'].to(device)
-        input_ids_source = batch['input_ids_source'].to(device)
-        attention_mask_source = batch['attention_mask_source'].to(device)
-        positions = batch['positions']
-
-        # Forward pass for base and source
+        opt_a.zero_grad()
+        inb = batch["input_ids_base"].to(device)
+        ab = batch["attn_base"].to(device)
+        lbsrc = batch["labels_source"].to(device)
+        insrc = batch["input_ids_source"].to(device)
+        asrc = batch["attn_source"].to(device)
         with torch.no_grad():
-            outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-            outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+            outb = model(inb, attention_mask=ab, output_hidden_states=True)
+            outs = model(insrc, attention_mask=asrc, output_hidden_states=True)
+        hidden_b = list(outb.hidden_states)
+        hidden_s = list(outs.hidden_states)
+        mixed = list(hidden_b)
+        for lay in layers_to_intervene:
+            hb = hidden_b[lay]
+            hs = hidden_s[lay]
+            hb_clone = hb.clone()
+            for bidx in range(hb.size(0)):
+                for tidx in range(hb.size(1)):
+                    hb_clone[bidx, tidx, :] = subspace_proj_a(hb[bidx,tidx,:], hs[bidx,tidx,:].detach())
+            mixed[lay] = hb_clone
 
-        # For each intervention layer
-        hidden_states_base = outputs_base.hidden_states
-        hidden_states_source = outputs_source.hidden_states
-
-        # Initialize mixed_hidden_states with base
-        mixed_hidden_states = list(hidden_states_base)
-
-        for layer in intervention_layers:
-            # Apply Boundless DAS intervention at specific token positions
-            h_base = hidden_states_base[layer]
-            h_source = hidden_states_source[layer]
-            mixed_h = h_base.clone()
-            for idx in range(h_base.size(0)):  # Batch size
-                pos = positions[idx]
-                for p in pos:
-                    mixed_h[idx, p, :] = subspace_proj_a(h_base[idx, p, :], h_source[idx, p, :].detach())
-            mixed_hidden_states[layer] = mixed_h
-
-        # Continue forward pass from the first intervention layer
-        hidden_states = mixed_hidden_states[intervention_layers[0]]
-        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
-            if idx in intervention_layers:
-                hidden_states = mixed_hidden_states[idx]
+        # Forward from the lowest intervened layer
+        hidden_states = mixed[layers_to_intervene[0]]
+        for li in range(layers_to_intervene[0]+1, len(hidden_b)):
+            if li in layers_to_intervene:
+                hidden_states = mixed[li]
             else:
-                hidden_states = model.transformer.h[idx](hidden_states)[0]
-
+                hidden_states = model.model.layers[li](hidden_states)[0]
         logits = model.lm_head(hidden_states)
+        lossfn = torch.nn.CrossEntropyLoss()
+        loss = lossfn(logits.view(-1, logits.size(-1)), lbsrc.view(-1))
 
-        # Compute loss using labels from source
-        loss_fn = torch.nn.CrossEntropyLoss()
-        loss = loss_fn(logits.view(-1, logits.size(-1)), labels_source.view(-1))
-
-        # Add boundary loss
-        mask_weight = 1.5
-        boundary_loss = mask_weight * subspace_proj_a.intervention_boundaries.sum()
+        # boundary loss
+        mask_weight=1.5
+        boundary_loss = mask_weight*subspace_proj_a.intervention_boundaries.sum()
         loss += boundary_loss
 
-        # Backward pass and optimization
         loss.backward()
-        optimizer_a.step()
+        opt_a.step()
         scheduler_a.step()
+        subspace_proj_a.set_temperature(temp_schedule_a[step_count])
+        step_count+=1
+        pbar.set_postfix({"loss": loss.item()})
 
-        # Update temperature
-        subspace_proj_a.set_temperature(temperature_schedule[step])
-        step += 1
+###############################################################################
+# EVALUATING IIA FOR MODEL A + HEATMAPS
+###############################################################################
 
-        pbar.set_postfix({'loss': loss.item()})
+import math
 
-# Evaluate Interchange Intervention Accuracy (IIA) for Causal Model A
-print("\nEvaluating IIA for Causal Model A...")
+num_layers = model.config.num_hidden_layers
+max_tokens = 128
+layer_step = 3
+token_step = 8
+coflip_map_a = np.zeros((math.ceil(num_layers/layer_step), math.ceil(max_tokens/token_step)))
+catflip_map_a = np.zeros_like(coflip_map_a)
+
 subspace_proj_a.eval()
-total_tokens = 0
-correct_tokens = 0
+def swap_and_check_a(inb, ab, insrc, asrc, lbsrc, layer_win, token_win):
+    with torch.no_grad():
+        outb = model(inb, attention_mask=ab, output_hidden_states=True)
+        outs = model(insrc, attention_mask=asrc, output_hidden_states=True)
+    hidden_b = list(outb.hidden_states)
+    hidden_s = list(outs.hidden_states)
+    mixed = list(hidden_b)
+    ls, le = layer_win
+    ts, te = token_win
+    for lay in range(ls, le):
+        hb = hidden_b[lay].clone()
+        hs = hidden_s[lay]
+        max_toks = min(hb.size(1), te)
+        for bidx in range(hb.size(0)):
+            for tidx in range(ts, max_toks):
+                hb[bidx, tidx, :] = subspace_proj_a(hidden_b[lay][bidx,tidx,:], hs[bidx,tidx,:])
+        mixed[lay] = hb
+    hidden_states = mixed[ls]
+    for li in range(ls+1, len(hidden_b)):
+        if ls <= li < le:
+            hidden_states = mixed[li]
+        else:
+            hidden_states = model.model.layers[li](hidden_states)[0]
+    logits = model.lm_head(hidden_states)
+    preds = torch.argmax(logits, dim=-1)
+    mask = (lbsrc != -100)
+    cat_flips = (preds != lbsrc) & mask
+    cat_flip_count = cat_flips.sum().item()
+    tok_count = mask.sum().item()
+    return cat_flip_count, tok_count
 
+layers_list = [(i, min(i+layer_step, num_layers)) for i in range(0,num_layers,layer_step)]
+tokens_list = [(i, min(i+token_step, max_tokens)) for i in range(0,max_tokens,token_step)]
+
+total_evals = 200
+eval_batches = 0
 with torch.no_grad():
-    for batch in tqdm(intervention_loader_a, desc="Evaluating IIA (Model A)"):
-        # Move data to device
-        input_ids_base = batch['input_ids_base'].to(device)
-        attention_mask_base = batch['attention_mask_base'].to(device)
-        labels_source = batch['labels_source'].to(device)
-        input_ids_source = batch['input_ids_source'].to(device)
-        attention_mask_source = batch['attention_mask_source'].to(device)
-        positions = batch['positions']
+    for batch in tqdm(loader_a, desc="Eval IIA Heatmap A"):
+        inb = batch["input_ids_base"].to(device)
+        ab = batch["attn_base"].to(device)
+        insrc = batch["input_ids_source"].to(device)
+        asrc = batch["attn_source"].to(device)
+        lbsrc = batch["labels_source"].to(device)
+        bs = inb.size(0)
+        if eval_batches*bs > total_evals:
+            break
+        eval_batches += 1
+        for li, (ls, le) in enumerate(layers_list):
+            for ti, (ts, te) in enumerate(tokens_list):
+                catflip, tcount = swap_and_check_a(inb, ab, insrc, asrc, lbsrc, (ls, le), (ts, te))
+                catflip_map_a[li, ti] += catflip
+                coflip_map_a[li, ti]  += tcount
 
-        # Forward pass for base and source
-        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
-        hidden_states_base = outputs_base.hidden_states
-        hidden_states_source = outputs_source.hidden_states
+heatmap_a = np.true_divide(catflip_map_a, coflip_map_a, out=np.zeros_like(catflip_map_a), where=(coflip_map_a!=0))
 
-        # Initialize mixed_hidden_states with base
-        mixed_hidden_states = list(hidden_states_base)
+plt.figure(figsize=(10,6))
+plt.imshow(heatmap_a, aspect='auto', cmap='viridis', origin='upper')
+plt.colorbar(label='Proportion of changed tokens w.r.t. source label')
+plt.xticks(range(len(tokens_list)), [f"{x[0]}-{x[1]}" for x in tokens_list], rotation=45, fontsize=7)
+plt.yticks(range(len(layers_list)), [f"{x[0]}-{x[1]}" for x in layers_list], fontsize=7)
+plt.title("Model A: IIA Heatmap (cat flips)")
+plt.xlabel("Token windows")
+plt.ylabel("Layer windows")
+os.makedirs("heatmaps", exist_ok=True)
+plt.savefig("heatmaps/modelA_iia_heatmap.png", dpi=150, bbox_inches='tight')
+plt.close()
 
-        for layer in intervention_layers:
-            # Apply Boundless DAS intervention at specific token positions
-            h_base = hidden_states_base[layer]
-            h_source = hidden_states_source[layer]
-            mixed_h = h_base.clone()
-            for idx in range(h_base.size(0)):  # Batch size
-                pos = positions[idx]
-                for p in pos:
-                    mixed_h[idx, p, :] = subspace_proj_a(h_base[idx, p, :], h_source[idx, p, :])
-            mixed_hidden_states[layer] = mixed_h
+###############################################################################
+# MODEL B: TRAIN + IIA + HEATMAP
+###############################################################################
+subspace_proj_b = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size).to(device)
+opt_b = torch.optim.Adam([
+    {"params": subspace_proj_b.rotate_layer.parameters()},
+    {"params": subspace_proj_b.intervention_boundaries, "lr":1e-2}],
+    lr=1e-3
+)
+total_steps_b = len(loader_b)*epochs
+scheduler_b = torch.optim.lr_scheduler.LinearLR(opt_b, start_factor=1.0, end_factor=0.0, total_iters=total_steps_b)
+temp_schedule_b = torch.linspace(temp_start, temp_end, total_steps_b)
 
-        # Continue forward pass from the first intervention layer
-        hidden_states = mixed_hidden_states[intervention_layers[0]]
-        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
-            if idx in intervention_layers:
-                hidden_states = mixed_hidden_states[idx]
-            else:
-                hidden_states = model.transformer.h[idx](hidden_states)[0]
-
-        logits = model.lm_head(hidden_states)
-
-        # Get predictions
-        predictions = torch.argmax(logits, dim=-1)
-
-        # Calculate accuracy
-        mask = (labels_source != -100)
-        total_tokens += mask.sum().item()
-        correct_tokens += ((predictions == labels_source) & mask).sum().item()
-
-iia_score_a = correct_tokens / total_tokens
-print(f"\nInterchange Intervention Accuracy (IIA) for Model A: {iia_score_a:.4f}")
-
-# Repeat the same for Causal Model B
-subspace_proj_b = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size)
-subspace_proj_b.to(device)
-optimizer_b = torch.optim.Adam([
-    {'params': subspace_proj_b.rotate_layer.parameters()},
-    {'params': subspace_proj_b.intervention_boundaries, 'lr': 1e-2}
-], lr=1e-3)
-scheduler_b = torch.optim.lr_scheduler.LinearLR(optimizer_b, total_iters=total_steps)
-
-# Temperature schedule for boundary masks
-temperature_schedule_b = torch.linspace(temperature_start, temperature_end, total_steps)
-
-print("\nTraining Boundless DAS for Causal Model B...")
-step = 0
-for epoch in range(epochs):
-    subspace_proj_b.train()
-    pbar = tqdm(intervention_loader_b, desc=f"Intervention Epoch {epoch+1}/{epochs} (Model B)")
+step_count = 0
+subspace_proj_b.train()
+for ep in range(epochs):
+    pbar = tqdm(loader_b, desc=f"Boundless DAS (Model B) Epoch {ep+1}/{epochs}")
     for batch in pbar:
-        optimizer_b.zero_grad()
-
-        # Move data to device
-        input_ids_base = batch['input_ids_base'].to(device)
-        attention_mask_base = batch['attention_mask_base'].to(device)
-        labels_source = batch['labels_source'].to(device)
-        input_ids_source = batch['input_ids_source'].to(device)
-        attention_mask_source = batch['attention_mask_source'].to(device)
-        positions = batch['positions']
-
-        # Forward pass for base and source
+        opt_b.zero_grad()
+        inb = batch["input_ids_base"].to(device)
+        ab = batch["attn_base"].to(device)
+        lbsrc = batch["labels_source"].to(device)
+        insrc = batch["input_ids_source"].to(device)
+        asrc = batch["attn_source"].to(device)
         with torch.no_grad():
-            outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-            outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+            outb = model(inb, attention_mask=ab, output_hidden_states=True)
+            outs = model(insrc, attention_mask=asrc, output_hidden_states=True)
+        hidden_b = list(outb.hidden_states)
+        hidden_s = list(outs.hidden_states)
+        mixed = list(hidden_b)
+        for lay in layers_to_intervene:
+            hb = hidden_b[lay]
+            hs = hidden_s[lay]
+            hb_clone = hb.clone()
+            for bidx in range(hb.size(0)):
+                for tidx in range(hb.size(1)):
+                    hb_clone[bidx, tidx, :] = subspace_proj_b(hb[bidx,tidx,:], hs[bidx,tidx,:].detach())
+            mixed[lay] = hb_clone
 
-        # For each intervention layer
-        hidden_states_base = outputs_base.hidden_states
-        hidden_states_source = outputs_source.hidden_states
-
-        # Initialize mixed_hidden_states with base
-        mixed_hidden_states = list(hidden_states_base)
-
-        for layer in intervention_layers:
-            # Apply Boundless DAS intervention at specific token positions
-            h_base = hidden_states_base[layer]
-            h_source = hidden_states_source[layer]
-            mixed_h = h_base.clone()
-            for idx in range(h_base.size(0)):  # Batch size
-                pos = positions[idx]
-                for p in pos:
-                    mixed_h[idx, p, :] = subspace_proj_b(h_base[idx, p, :], h_source[idx, p, :].detach())
-            mixed_hidden_states[layer] = mixed_h
-
-        # Continue forward pass from the first intervention layer
-        hidden_states = mixed_hidden_states[intervention_layers[0]]
-        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
-            if idx in intervention_layers:
-                hidden_states = mixed_hidden_states[idx]
+        hidden_states = mixed[layers_to_intervene[0]]
+        for li in range(layers_to_intervene[0]+1, len(hidden_b)):
+            if li in layers_to_intervene:
+                hidden_states = mixed[li]
             else:
-                hidden_states = model.transformer.h[idx](hidden_states)[0]
-
+                hidden_states = model.model.layers[li](hidden_states)[0]
         logits = model.lm_head(hidden_states)
+        lossfn = torch.nn.CrossEntropyLoss()
+        loss = lossfn(logits.view(-1, logits.size(-1)), lbsrc.view(-1))
 
-        # Compute loss using labels from source
-        loss_fn = torch.nn.CrossEntropyLoss()
-        loss = loss_fn(logits.view(-1, logits.size(-1)), labels_source.view(-1))
-
-        # Add boundary loss
-        mask_weight = 1.5
-        boundary_loss = mask_weight * subspace_proj_b.intervention_boundaries.sum()
+        mask_weight=1.5
+        boundary_loss = mask_weight*subspace_proj_b.intervention_boundaries.sum()
         loss += boundary_loss
 
-        # Backward pass and optimization
         loss.backward()
-        optimizer_b.step()
+        opt_b.step()
         scheduler_b.step()
+        subspace_proj_b.set_temperature(temp_schedule_b[step_count])
+        step_count+=1
+        pbar.set_postfix({"loss": loss.item()})
 
-        # Update temperature
-        subspace_proj_b.set_temperature(temperature_schedule_b[step])
-        step += 1
-
-        pbar.set_postfix({'loss': loss.item()})
-
-# Evaluate Interchange Intervention Accuracy (IIA) for Causal Model B
-print("\nEvaluating IIA for Causal Model B...")
 subspace_proj_b.eval()
-total_tokens = 0
-correct_tokens = 0
+coflip_map_b = np.zeros((math.ceil(num_layers/layer_step), math.ceil(max_tokens/token_step)))
+catflip_map_b = np.zeros_like(coflip_map_b)
 
+def swap_and_check_b(inb, ab, insrc, asrc, lbsrc, layer_win, token_win):
+    with torch.no_grad():
+        outb = model(inb, attention_mask=ab, output_hidden_states=True)
+        outs = model(insrc, attention_mask=asrc, output_hidden_states=True)
+    hidden_b = list(outb.hidden_states)
+    hidden_s = list(outs.hidden_states)
+    mixed = list(hidden_b)
+    ls, le = layer_win
+    ts, te = token_win
+    for lay in range(ls, le):
+        hb = hidden_b[lay].clone()
+        hs = hidden_s[lay]
+        max_toks = min(hb.size(1), te)
+        for bidx in range(hb.size(0)):
+            for tidx in range(ts, max_toks):
+                hb[bidx, tidx, :] = subspace_proj_b(hidden_b[lay][bidx,tidx,:], hs[bidx,tidx,:])
+        mixed[lay] = hb
+    hidden_states = mixed[ls]
+    for li in range(ls+1, len(hidden_b)):
+        if ls <= li < le:
+            hidden_states = mixed[li]
+        else:
+            hidden_states = model.model.layers[li](hidden_states)[0]
+    logits = model.lm_head(hidden_states)
+    preds = torch.argmax(logits, dim=-1)
+    mask = (lbsrc != -100)
+    cat_flips = (preds != lbsrc) & mask
+    cat_flip_count = cat_flips.sum().item()
+    tok_count = mask.sum().item()
+    return cat_flip_count, tok_count
+
+eval_batches = 0
+total_evals = 200
 with torch.no_grad():
-    for batch in tqdm(intervention_loader_b, desc="Evaluating IIA (Model B)"):
-        # Move data to device
-        input_ids_base = batch['input_ids_base'].to(device)
-        attention_mask_base = batch['attention_mask_base'].to(device)
-        labels_source = batch['labels_source'].to(device)
-        input_ids_source = batch['input_ids_source'].to(device)
-        attention_mask_source = batch['attention_mask_source'].to(device)
-        positions = batch['positions']
+    for batch in tqdm(loader_b, desc="Eval IIA Heatmap B"):
+        inb = batch["input_ids_base"].to(device)
+        ab = batch["attn_base"].to(device)
+        insrc = batch["input_ids_source"].to(device)
+        asrc = batch["attn_source"].to(device)
+        lbsrc = batch["labels_source"].to(device)
+        bs = inb.size(0)
+        if eval_batches*bs > total_evals:
+            break
+        eval_batches += 1
+        for li, (ls, le) in enumerate(layers_list):
+            for ti, (ts, te) in enumerate(tokens_list):
+                catflip, tcount = swap_and_check_b(inb, ab, insrc, asrc, lbsrc, (ls, le), (ts, te))
+                catflip_map_b[li, ti] += catflip
+                coflip_map_b[li, ti] += tcount
 
-        # Forward pass for base and source
-        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
-        hidden_states_base = outputs_base.hidden_states
-        hidden_states_source = outputs_source.hidden_states
+heatmap_b = np.true_divide(catflip_map_b, coflip_map_b, out=np.zeros_like(catflip_map_b), where=(coflip_map_b!=0))
 
-        # Initialize mixed_hidden_states with base
-        mixed_hidden_states = list(hidden_states_base)
+plt.figure(figsize=(10,6))
+plt.imshow(heatmap_b, aspect='auto', cmap='plasma', origin='upper')
+plt.colorbar(label='Proportion of changed tokens w.r.t. source label')
+plt.xticks(range(len(tokens_list)), [f"{x[0]}-{x[1]}" for x in tokens_list], rotation=45, fontsize=7)
+plt.yticks(range(len(layers_list)), [f"{x[0]}-{x[1]}" for x in layers_list], fontsize=7)
+plt.title("Model B: IIA Heatmap (cat flips)")
+plt.xlabel("Token windows")
+plt.ylabel("Layer windows")
+plt.savefig("heatmaps/modelB_iia_heatmap.png", dpi=150, bbox_inches='tight')
+plt.close()
 
-        for layer in intervention_layers:
-            # Apply Boundless DAS intervention at specific token positions
-            h_base = hidden_states_base[layer]
-            h_source = hidden_states_source[layer]
-            mixed_h = h_base.clone()
-            for idx in range(h_base.size(0)):  # Batch size
-                pos = positions[idx]
-                for p in pos:
-                    mixed_h[idx, p, :] = subspace_proj_b(h_base[idx, p, :], h_source[idx, p, :])
-            mixed_hidden_states[layer] = mixed_h
+###############################################################################
+# FINAL COMPARISON OF MODEL A vs MODEL B
+###############################################################################
 
-        # Continue forward pass from the first intervention layer
-        hidden_states = mixed_hidden_states[intervention_layers[0]]
-        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
-            if idx in intervention_layers:
-                hidden_states = mixed_hidden_states[idx]
-            else:
-                hidden_states = model.transformer.h[idx](hidden_states)[0]
+def evaluate_iia(loader, subspace_proj):
+    model.eval()
+    subspace_proj.eval()
+    total_tok = 0
+    correct_tok = 0
+    with torch.no_grad():
+        for batch in loader:
+            inb = batch["input_ids_base"].to(device)
+            ab = batch["attn_base"].to(device)
+            lbsrc = batch["labels_source"].to(device)
+            insrc = batch["input_ids_source"].to(device)
+            asrc = batch["attn_source"].to(device)
+            outb = model(inb, attention_mask=ab, output_hidden_states=True)
+            outs = model(insrc, attention_mask=asrc, output_hidden_states=True)
+            hb = list(outb.hidden_states)
+            hs = list(outs.hidden_states)
+            mixed = list(hb)
+            for lay in layers_to_intervene:
+                hbc = hb[lay].clone()
+                for bidx in range(hbc.size(0)):
+                    for tidx in range(hbc.size(1)):
+                        hbc[bidx, tidx, :] = subspace_proj(hb[lay][bidx,tidx,:], hs[lay][bidx,tidx,:])
+                mixed[lay] = hbc
+            hidden_states = mixed[layers_to_intervene[0]]
+            for li in range(layers_to_intervene[0]+1, len(hb)):
+                if li in layers_to_intervene:
+                    hidden_states = mixed[li]
+                else:
+                    hidden_states = model.model.layers[li](hidden_states)[0]
+            logits = model.lm_head(hidden_states)
+            preds = torch.argmax(logits, dim=-1)
+            mask = (lblsrc != -100)
+            total_tok += mask.sum().item()
+            correct_tok += ((preds == lbsrc) & mask).sum().item()
+    return correct_tok / total_tok
 
-        logits = model.lm_head(hidden_states)
+score_a = evaluate_iia(loader_a, subspace_proj_a)
+score_b = evaluate_iia(loader_b, subspace_proj_b)
 
-        # Get predictions
-        predictions = torch.argmax(logits, dim=-1)
-
-        # Calculate accuracy
-        mask = (labels_source != -100)
-        total_tokens += mask.sum().item()
-        correct_tokens += ((predictions == labels_source) & mask).sum().item()
-
-iia_score_b = correct_tokens / total_tokens
-print(f"\nInterchange Intervention Accuracy (IIA) for Model B: {iia_score_b:.4f}")
-
-# Compare IIA scores
-print("\n--- Comparison of IIA Scores ---")
-print(f"IIA for Model A (XOR as unitary): {iia_score_a:.4f}")
-print(f"IIA for Model B (XOR decomposed): {iia_score_b:.4f}")
-
-if iia_score_a > iia_score_b:
-    print("The model's reasoning aligns more with Causal Model A (XOR as unitary operation).")
-elif iia_score_b > iia_score_a:
-    print("The model's reasoning aligns more with Causal Model B (XOR decomposed into OR, AND, NOT).")
+print("\n--- Interchange Intervention Accuracy Comparison ---")
+print(f"Model A (XOR unitary) IIA: {score_a:.4f}")
+print(f"Model B (XOR decomposed) IIA: {score_b:.4f}")
+if score_a > score_b:
+    print("The model's internal reasoning aligns more with Model A.")
+elif score_b > score_a:
+    print("The model's internal reasoning aligns more with Model B.")
 else:
-    print("The model's reasoning aligns equally with both causal models.")
+    print("Both causal models yield the same IIA.")
