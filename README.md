@@ -89,8 +89,12 @@ These changes enable multi-GPU use while maintaining intervention compatibility.
 
 High level logic model experiment: How is the model reasoning about the underlying rules?
 
-What's tricky here is that in the original data for getting a new object categorization without rule elicitation, prompts are of different lengths as data changes and context expands, and the rule is always changing. This makes it difficult to use DAS, which assumes constant token positions and the ability to hand-specify some candidate causal models (which would be rule specific). So I have an idea to do one rule at a time (one rule has specifiable candidate causal models), and with fixed length prompts. 
+In this experiment, we study whether a model’s internal reasoning aligns more closely with one of two “XOR” causal models. We use a fixed token-length prompt describing basic “objects” (color + shape), and label them “True” or “False” under the rule “yellow XOR circle.” We then generate pairs of “base” and “source” examples for two candidate causal models:
+• Model A: Treats XOR as a single logical operation.
+• Model B: Decomposes XOR into OR, AND, and NOT steps.
 
-We take one rule. We generate a lot of fixed length prompts (maybe 20 thousand, sufficient for boundless DAS training) that are consistent with this rule, with the same number of examples each time (so token positions are constant), but we change the object characteristics and associated true / false labels. In order to keep the prompts the same length while changing out content, we make all variable names single token and introduce them at the beginning of the prompt (e.g "We will use rec for rectangle..."). We specify by hand a few different high level causal models for how the LLM is solving the task. Maybe these models differ in order of operations, or grouping or something. Maybe one of the operators in the rule is an xor, which can be represented in the causal model either as one unitary operation, or as composed out of or plus and. We run boundless DAS like the Alpaca example and see if we get high IIA matching with one of the causal models. We repeat this process for maybe 3 rules.
+We apply Boundless DAS to these pairs, training a rotation + boundary-masking subspace so that intervening on the base’s activations with the source’s activations reproduces the source’s outcome. Afterward, we:
 
-From the above we'll be able to say: we can verify that the rule elicitations are faithful to however the model is deriving the answer, and we can verify that on this sample of a few rules, this is the interpretable underlying causal model the LLM is using.
+Visualize per-layer, per-token swap effects in a heatmap.
+Compute a global Interchange Intervention Accuracy (IIA) score for each causal model.
+By comparing heatmaps and IIA scores, we determine which causal model best explains the network’s internal logic.
