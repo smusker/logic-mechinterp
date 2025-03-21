@@ -3,39 +3,27 @@ try:
     import pyvene
 except ImportError:
     !pip install git+https://github.com/stanfordnlp/pyvene.git
-    import pyvene
 
 try:
     import transformers
 except ImportError:
     !pip install transformers
-    import transformers
 
 try:
     import datasets
 except ImportError:
     !pip install datasets
-    import datasets
 
 try:
-    import tqdm
+    from tqdm import tqdm
 except ImportError:
     !pip install tqdm
-    import tqdm
 
 # Import necessary modules
 import torch
 import numpy as np
-from pyvene import (
-    IntervenableModel,
-    IntervenableConfig,
-    BoundlessRotatedSpaceIntervention
-)
-from transformers import (
-    GPT2Tokenizer,
-    GPT2LMHeadModel,
-    set_seed
-)
+from pyvene import BoundlessRotatedSpaceIntervention
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 from datasets import Dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -44,15 +32,23 @@ import random
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load GPT-2 tokenizer and model
-tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+# Load instruction-tuned model and tokenizer
+# Replace 'your_instruction_tuned_model' with the actual model name you want to use
+model_name = 'tiiuae/falcon-7b-instruct'  # Example instruction-tuned LLM
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token = tokenizer.eos_token  # Ensure there is a pad token
 
-model = GPT2LMHeadModel.from_pretrained('gpt2')
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16,
+    device_map='auto'
+)
 model.to(device)
 model.eval()
 
 # Set random seeds for reproducibility
+set_seed(42)
 random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
@@ -60,11 +56,9 @@ torch.manual_seed(42)
 # Define object attributes and abbreviations
 colors = ['yellow', 'blue', 'green']
 shapes = ['circle', 'triangle', 'rectangle']
-sizes = ['small', 'medium', 'large']
 
 color_abbr = {'yellow': 'yel', 'blue': 'blu', 'green': 'grn'}
 shape_abbr = {'circle': 'cir', 'triangle': 'tri', 'rectangle': 'rec'}
-size_abbr = {'small': 'sml', 'medium': 'med', 'large': 'lrg'}
 
 # Logical rule: "yellow XOR circle"
 def rule_eval(color, shape):
@@ -85,8 +79,7 @@ def causal_model_b(color, shape):
 def generate_prompt_and_target():
     intro = (
         "We will use 'yel' for yellow, 'blu' for blue, 'grn' for green.\n"
-        "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n"
-        "We will use 'sml' for small, 'med' for medium, 'lrg' for large.\n\n"
+        "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n\n"
     )
 
     prompt = (
@@ -103,8 +96,7 @@ def generate_prompt_and_target():
     for _ in range(num_objects):
         color = random.choice(colors)
         shape = random.choice(shapes)
-        size = random.choice(sizes)
-        obj_str = f"- {size_abbr[size]} {color_abbr[color]} {shape_abbr[shape]}"
+        obj_str = f"- {color_abbr[color]} {shape_abbr[shape]}"
         label = 'True' if rule_eval(color, shape) else 'False'
         objects.append(obj_str)
         labels.append(f"{obj_str} -> {label}")
@@ -118,10 +110,10 @@ def generate_prompt_and_target():
     targets = tokenizer(full_target, return_tensors='pt')
 
     # Combine inputs and labels
-    input_ids = torch.cat([inputs['input_ids'], targets['input_ids']], dim=1).squeeze()
+    input_ids = torch.cat([inputs['input_ids'], targets['input_ids']], dim=1)
     attention_mask = torch.ones_like(input_ids)
     labels = input_ids.clone()
-    labels[:inputs['input_ids'].shape[1]] = -100  # Mask out the prompt
+    labels[:, :inputs['input_ids'].shape[1]] = -100  # Mask out the prompt
 
     return {
         'input_ids': input_ids.squeeze(),
@@ -159,7 +151,7 @@ dataset = Dataset.from_dict({
 })
 
 # Split into training and validation sets
-split_data = dataset.train_test_split(test_size=0.1)
+split_data = dataset.train_test_split(test_size=0.1, seed=42)
 train_dataset = split_data['train']
 valid_dataset = split_data['test']
 
@@ -172,48 +164,35 @@ batch_size = 8
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 valid_loader = DataLoader(valid_dataset, batch_size=batch_size)
 
-# Initialize Boundless DAS module
-subspace_proj = BoundlessRotatedSpaceIntervention(embed_dim=model.config.n_embd)
-subspace_proj.to(device)
-
-# Training parameters
-epochs = 3
-optimizer_params = [
-    {'params': subspace_proj.rotate_layer.parameters()},
-    {'params': subspace_proj.intervention_boundaries, 'lr': 1e-2}
-]
-optimizer = torch.optim.Adam(optimizer_params, lr=1e-3)
-total_steps = epochs * len(train_loader)
-scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, total_iters=total_steps)
-
-# Define loss function
-loss_fn = torch.nn.CrossEntropyLoss()
-
-# Training loop for the main model
-for epoch in range(epochs):
-    subspace_proj.train()
-    pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
-    for batch in pbar:
-        optimizer.zero_grad()
-
-        # Move data to device
+# Since we're not fine-tuning, we can proceed to evaluate the model's performance on the validation set
+# Evaluate model performance
+model.eval()
+total = 0
+correct = 0
+with torch.no_grad():
+    for batch in tqdm(valid_loader, desc="Evaluating the model"):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
 
-        # Forward pass
-        outputs = model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        outputs = model(input_ids, attention_mask=attention_mask)
         logits = outputs.logits
 
-        # Compute loss
-        loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
+        # Get predictions
+        predictions = torch.argmax(logits, dim=-1)
 
-        # Backward pass and optimization
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
+        # Calculate accuracy
+        mask = (labels != -100)
+        total += mask.sum().item()
+        correct += ((predictions == labels) & mask).sum().item()
 
-        pbar.set_postfix({'loss': loss.item()})
+accuracy = correct / total
+print(f"\nModel accuracy: {accuracy:.4f}")
+
+# Proceed to Boundless DAS training
+# Freeze the language model parameters for Boundless DAS training
+for param in model.parameters():
+    param.requires_grad = False
 
 # Function to generate intervention data
 def generate_intervention_data(num_examples, causal_model_func):
@@ -222,7 +201,6 @@ def generate_intervention_data(num_examples, causal_model_func):
         # Base example
         color_base = random.choice(colors)
         shape_base = random.choice(shapes)
-        size_base = random.choice(sizes)
         label_base = 'True' if causal_model_func(color_base, shape_base) else 'False'
 
         # Source example
@@ -231,14 +209,19 @@ def generate_intervention_data(num_examples, causal_model_func):
             shape_source = random.choice(shapes)
             if color_source != color_base or shape_source != shape_base:
                 break
-        size_source = size_base  # Keep size the same
         label_source = 'True' if causal_model_func(color_source, shape_source) else 'False'
+
+        # Ensure consistent object formatting
+        def create_object_description(color, shape):
+            return f"- {color_abbr[color]} {shape_abbr[shape]}"
+
+        obj_base = create_object_description(color_base, shape_base)
+        obj_source = create_object_description(color_source, shape_source)
 
         # Create prompts and targets
         intro = (
             "We will use 'yel' for yellow, 'blu' for blue, 'grn' for green.\n"
-            "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n"
-            "We will use 'sml' for small, 'med' for medium, 'lrg' for large.\n\n"
+            "We will use 'cir' for circle, 'tri' for triangle, 'rec' for rectangle.\n\n"
         )
         prompt = (
             "Learn the secret rule to label the objects correctly. "
@@ -246,40 +229,60 @@ def generate_intervention_data(num_examples, causal_model_func):
             "Be concise and always follow the arrow '->' with an object's label.\n\n"
             "Label the following object:\n"
         )
-        obj_base = f"- {size_abbr[size_base]} {color_abbr[color_base]} {shape_abbr[shape_base]}"
-        target_base = f"{obj_base} -> {label_base}\n"
 
-        obj_source = f"- {size_abbr[size_source]} {color_abbr[color_source]} {shape_abbr[shape_source]}"
-        target_source = f"{obj_base} -> {label_source}\n"  # Note: obj_base in prompt, label from source
+        full_prompt_base = intro + prompt + obj_base + "\n"
+        full_target_base = f"{obj_base} -> {label_base}\n"
+
+        full_prompt_source = intro + prompt + obj_base + "\n"
+        full_target_source = f"{obj_base} -> {label_source}\n"
 
         # Tokenize base and source
-        full_prompt_base = intro + prompt + obj_base + "\n" + target_base
-        full_prompt_source = intro + prompt + obj_base + "\n" + target_source
-
         inputs_base = tokenizer(full_prompt_base, return_tensors='pt')
+        targets_base = tokenizer(full_target_base, return_tensors='pt')
+
         inputs_source = tokenizer(full_prompt_source, return_tensors='pt')
+        targets_source = tokenizer(full_target_source, return_tensors='pt')
 
-        # Labels
-        labels_base = inputs_base['input_ids'].clone()
-        labels_source = inputs_source['input_ids'].clone()
+        # Combine inputs and labels
+        input_ids_base = torch.cat([inputs_base['input_ids'], targets_base['input_ids']], dim=1)
+        attention_mask_base = torch.ones_like(input_ids_base)
+        labels_base = input_ids_base.clone()
+        labels_base[:, :inputs_base['input_ids'].shape[1]] = -100  # Mask out the prompt
 
-        # Mask out the prompt
-        prompt_length = inputs_base['input_ids'].shape[1] - len(tokenizer(target_base)['input_ids'])
-        labels_base[:, :prompt_length] = -100
-        labels_source[:, :prompt_length] = -100
+        input_ids_source = torch.cat([inputs_source['input_ids'], targets_source['input_ids']], dim=1)
+        attention_mask_source = torch.ones_like(input_ids_source)
+        labels_source = input_ids_source.clone()
+        labels_source[:, :inputs_source['input_ids'].shape[1]] = -100  # Mask out the prompt
+
+        # Record token positions for variables
+        def get_variable_positions(input_ids):
+            color_tokens = [tokenizer.encode(abbr, add_special_tokens=False)[0] for abbr in color_abbr.values()]
+            shape_tokens = [tokenizer.encode(abbr, add_special_tokens=False)[0] for abbr in shape_abbr.values()]
+            positions = []
+            for i, id in enumerate(input_ids.squeeze().tolist()):
+                if id in color_tokens + shape_tokens:
+                    positions.append(i)
+            return positions
+
+        positions_base = get_variable_positions(inputs_base['input_ids'])
+        positions_source = get_variable_positions(inputs_source['input_ids'])
+        # Ensure positions are aligned
+        if positions_base != positions_source:
+            continue  # Skip this example if positions don't align
 
         intervention_data.append({
-            'input_ids_base': inputs_base['input_ids'].squeeze(),
-            'attention_mask_base': inputs_base['attention_mask'].squeeze(),
+            'input_ids_base': input_ids_base.squeeze(),
+            'attention_mask_base': attention_mask_base.squeeze(),
             'labels_base': labels_base.squeeze(),
-            'input_ids_source': inputs_source['input_ids'].squeeze(),
-            'attention_mask_source': inputs_source['attention_mask'].squeeze(),
-            'labels_source': labels_source.squeeze()
+            'input_ids_source': input_ids_source.squeeze(),
+            'attention_mask_source': attention_mask_source.squeeze(),
+            'labels_source': labels_source.squeeze(),
+            'positions': positions_base
         })
     return intervention_data
 
 # Generate intervention data for both causal models
-intervention_examples = 10000
+intervention_examples = 10000  # Adjust as needed
 
 # For Causal Model A
 intervention_data_a = generate_intervention_data(intervention_examples, causal_model_a)
@@ -290,19 +293,19 @@ intervention_data_b = generate_intervention_data(intervention_examples, causal_m
 # Function to prepare intervention data
 def prepare_intervention_data(intervention_data):
     # Ensure sequences are of the same length
-    max_length_intervention = max(
-        max(len(d['input_ids_base']) for d in intervention_data),
-        max(len(d['input_ids_source']) for d in intervention_data)
-    )
+    max_length_base = max(len(d['input_ids_base']) for d in intervention_data)
+    max_length_source = max(len(d['input_ids_source']) for d in intervention_data)
+    max_length = max(max_length_base, max_length_source)
 
     # Pad intervention data
     for d in intervention_data:
-        d['input_ids_base'] = pad_sequence(d['input_ids_base'], max_length_intervention)
-        d['attention_mask_base'] = pad_attention(d['attention_mask_base'], max_length_intervention)
-        d['labels_base'] = pad_labels(d['labels_base'], max_length_intervention)
-        d['input_ids_source'] = pad_sequence(d['input_ids_source'], max_length_intervention)
-        d['attention_mask_source'] = pad_attention(d['attention_mask_source'], max_length_intervention)
-        d['labels_source'] = pad_labels(d['labels_source'], max_length_intervention)
+        d['input_ids_base'] = pad_sequence(d['input_ids_base'], max_length)
+        d['attention_mask_base'] = pad_attention(d['attention_mask_base'], max_length)
+        d['labels_base'] = pad_labels(d['labels_base'], max_length)
+        d['input_ids_source'] = pad_sequence(d['input_ids_source'], max_length)
+        d['attention_mask_source'] = pad_attention(d['attention_mask_source'], max_length)
+        d['labels_source'] = pad_labels(d['labels_source'], max_length)
+        d['positions'] = d['positions']  # Keep positions as is
 
     # Create intervention Dataset and DataLoader
     intervention_dataset = Dataset.from_dict({
@@ -311,12 +314,14 @@ def prepare_intervention_data(intervention_data):
         'labels_base': [d['labels_base'].tolist() for d in intervention_data],
         'input_ids_source': [d['input_ids_source'].tolist() for d in intervention_data],
         'attention_mask_source': [d['attention_mask_source'].tolist() for d in intervention_data],
-        'labels_source': [d['labels_source'].tolist() for d in intervention_data]
+        'labels_source': [d['labels_source'].tolist() for d in intervention_data],
+        'positions': [d['positions'] for d in intervention_data]
     })
 
     intervention_dataset.set_format(type='torch', columns=[
         'input_ids_base', 'attention_mask_base', 'labels_base',
-        'input_ids_source', 'attention_mask_source', 'labels_source'
+        'input_ids_source', 'attention_mask_source', 'labels_source',
+        'positions'
     ])
 
     intervention_loader = DataLoader(intervention_dataset, batch_size=batch_size)
@@ -327,54 +332,95 @@ intervention_loader_a = prepare_intervention_data(intervention_data_a)
 intervention_loader_b = prepare_intervention_data(intervention_data_b)
 
 # Training Boundless DAS on intervention data for Causal Model A
-intervention_layer = 6  # Choose the layer to intervene on
+intervention_layers = [0, 5, 10, 15, 20, 25, 30]  # Adjust layers to align with Alpaca
+
+# Initialize separate optimizer and scheduler for Boundless DAS training
+subspace_proj_a = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size)
+subspace_proj_a.to(device)
+optimizer_a = torch.optim.Adam([
+    {'params': subspace_proj_a.rotate_layer.parameters()},
+    {'params': subspace_proj_a.intervention_boundaries, 'lr': 1e-2}
+], lr=1e-3)
+total_steps = len(intervention_loader_a) * epochs
+scheduler_a = torch.optim.lr_scheduler.LinearLR(optimizer_a, total_iters=total_steps)
+
+# Temperature schedule for boundary masks
+temperature_start = 50.0
+temperature_end = 0.1
+temperature_schedule = torch.linspace(temperature_start, temperature_end, total_steps)
 
 print("\nTraining Boundless DAS for Causal Model A...")
+step = 0
 for epoch in range(epochs):
-    subspace_proj.train()
+    subspace_proj_a.train()
     pbar = tqdm(intervention_loader_a, desc=f"Intervention Epoch {epoch+1}/{epochs} (Model A)")
     for batch in pbar:
-        optimizer.zero_grad()
+        optimizer_a.zero_grad()
 
         # Move data to device
         input_ids_base = batch['input_ids_base'].to(device)
         attention_mask_base = batch['attention_mask_base'].to(device)
-        labels_base = batch['labels_base'].to(device)
+        labels_source = batch['labels_source'].to(device)
         input_ids_source = batch['input_ids_source'].to(device)
         attention_mask_source = batch['attention_mask_source'].to(device)
-        labels_source = batch['labels_source'].to(device)
+        positions = batch['positions']
 
-        # Get base and source outputs
-        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+        # Forward pass for base and source
+        with torch.no_grad():
+            outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
+            outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
 
-        # Get hidden states at intervention layer
-        hidden_states_base = outputs_base.hidden_states[intervention_layer]
-        hidden_states_source = outputs_source.hidden_states[intervention_layer]
+        # For each intervention layer
+        hidden_states_base = outputs_base.hidden_states
+        hidden_states_source = outputs_source.hidden_states
 
-        # Apply Boundless DAS intervention
-        mixed_hidden_states = subspace_proj(hidden_states_base, hidden_states_source)
+        # Initialize mixed_hidden_states with base
+        mixed_hidden_states = list(hidden_states_base)
 
-        # Continue forward pass from the intervention layer
-        hidden_states = mixed_hidden_states
-        for layer in model.transformer.h[intervention_layer:]:
-            hidden_states = layer(hidden_states)[0]
+        for layer in intervention_layers:
+            # Apply Boundless DAS intervention at specific token positions
+            h_base = hidden_states_base[layer]
+            h_source = hidden_states_source[layer]
+            mixed_h = h_base.clone()
+            for idx in range(h_base.size(0)):  # Batch size
+                pos = positions[idx]
+                for p in pos:
+                    mixed_h[idx, p, :] = subspace_proj_a(h_base[idx, p, :], h_source[idx, p, :].detach())
+            mixed_hidden_states[layer] = mixed_h
+
+        # Continue forward pass from the first intervention layer
+        hidden_states = mixed_hidden_states[intervention_layers[0]]
+        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
+            if idx in intervention_layers:
+                hidden_states = mixed_hidden_states[idx]
+            else:
+                hidden_states = model.transformer.h[idx](hidden_states)[0]
 
         logits = model.lm_head(hidden_states)
 
-        # Compute loss
+        # Compute loss using labels from source
+        loss_fn = torch.nn.CrossEntropyLoss()
         loss = loss_fn(logits.view(-1, logits.size(-1)), labels_source.view(-1))
+
+        # Add boundary loss
+        mask_weight = 1.5
+        boundary_loss = mask_weight * subspace_proj_a.intervention_boundaries.sum()
+        loss += boundary_loss
 
         # Backward pass and optimization
         loss.backward()
-        optimizer.step()
-        scheduler.step()
+        optimizer_a.step()
+        scheduler_a.step()
+
+        # Update temperature
+        subspace_proj_a.set_temperature(temperature_schedule[step])
+        step += 1
 
         pbar.set_postfix({'loss': loss.item()})
 
 # Evaluate Interchange Intervention Accuracy (IIA) for Causal Model A
 print("\nEvaluating IIA for Causal Model A...")
-subspace_proj.eval()
+subspace_proj_a.eval()
 total_tokens = 0
 correct_tokens = 0
 
@@ -384,18 +430,37 @@ with torch.no_grad():
         input_ids_base = batch['input_ids_base'].to(device)
         attention_mask_base = batch['attention_mask_base'].to(device)
         labels_source = batch['labels_source'].to(device)
+        input_ids_source = batch['input_ids_source'].to(device)
+        attention_mask_source = batch['attention_mask_source'].to(device)
+        positions = batch['positions']
 
-        # Get base and source outputs
+        # Forward pass for base and source
         outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-        hidden_states_base = outputs_base.hidden_states[intervention_layer]
+        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+        hidden_states_base = outputs_base.hidden_states
+        hidden_states_source = outputs_source.hidden_states
 
-        # Apply Boundless DAS intervention (using source data as target)
-        mixed_hidden_states = subspace_proj(hidden_states_base, hidden_states_base)  # No swapping here for evaluation
+        # Initialize mixed_hidden_states with base
+        mixed_hidden_states = list(hidden_states_base)
 
-        # Continue forward pass
-        hidden_states = mixed_hidden_states
-        for layer in model.transformer.h[intervention_layer:]:
-            hidden_states = layer(hidden_states)[0]
+        for layer in intervention_layers:
+            # Apply Boundless DAS intervention at specific token positions
+            h_base = hidden_states_base[layer]
+            h_source = hidden_states_source[layer]
+            mixed_h = h_base.clone()
+            for idx in range(h_base.size(0)):  # Batch size
+                pos = positions[idx]
+                for p in pos:
+                    mixed_h[idx, p, :] = subspace_proj_a(h_base[idx, p, :], h_source[idx, p, :])
+            mixed_hidden_states[layer] = mixed_h
+
+        # Continue forward pass from the first intervention layer
+        hidden_states = mixed_hidden_states[intervention_layers[0]]
+        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
+            if idx in intervention_layers:
+                hidden_states = mixed_hidden_states[idx]
+            else:
+                hidden_states = model.transformer.h[idx](hidden_states)[0]
 
         logits = model.lm_head(hidden_states)
 
@@ -410,51 +475,84 @@ with torch.no_grad():
 iia_score_a = correct_tokens / total_tokens
 print(f"\nInterchange Intervention Accuracy (IIA) for Model A: {iia_score_a:.4f}")
 
-# Training Boundless DAS on intervention data for Causal Model B
-# Re-initialize Boundless DAS module for Model B
-subspace_proj_b = BoundlessRotatedSpaceIntervention(embed_dim=model.config.n_embd)
+# Repeat the same for Causal Model B
+subspace_proj_b = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size)
 subspace_proj_b.to(device)
+optimizer_b = torch.optim.Adam([
+    {'params': subspace_proj_b.rotate_layer.parameters()},
+    {'params': subspace_proj_b.intervention_boundaries, 'lr': 1e-2}
+], lr=1e-3)
+scheduler_b = torch.optim.lr_scheduler.LinearLR(optimizer_b, total_iters=total_steps)
+
+# Temperature schedule for boundary masks
+temperature_schedule_b = torch.linspace(temperature_start, temperature_end, total_steps)
 
 print("\nTraining Boundless DAS for Causal Model B...")
+step = 0
 for epoch in range(epochs):
     subspace_proj_b.train()
     pbar = tqdm(intervention_loader_b, desc=f"Intervention Epoch {epoch+1}/{epochs} (Model B)")
     for batch in pbar:
-        optimizer.zero_grad()
+        optimizer_b.zero_grad()
 
         # Move data to device
         input_ids_base = batch['input_ids_base'].to(device)
         attention_mask_base = batch['attention_mask_base'].to(device)
-        labels_base = batch['labels_base'].to(device)
+        labels_source = batch['labels_source'].to(device)
         input_ids_source = batch['input_ids_source'].to(device)
         attention_mask_source = batch['attention_mask_source'].to(device)
-        labels_source = batch['labels_source'].to(device)
+        positions = batch['positions']
 
-        # Get base and source outputs
-        outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+        # Forward pass for base and source
+        with torch.no_grad():
+            outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
+            outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
 
-        # Get hidden states at intervention layer
-        hidden_states_base = outputs_base.hidden_states[intervention_layer]
-        hidden_states_source = outputs_source.hidden_states[intervention_layer]
+        # For each intervention layer
+        hidden_states_base = outputs_base.hidden_states
+        hidden_states_source = outputs_source.hidden_states
 
-        # Apply Boundless DAS intervention
-        mixed_hidden_states = subspace_proj_b(hidden_states_base, hidden_states_source)
+        # Initialize mixed_hidden_states with base
+        mixed_hidden_states = list(hidden_states_base)
 
-        # Continue forward pass from the intervention layer
-        hidden_states = mixed_hidden_states
-        for layer in model.transformer.h[intervention_layer:]:
-            hidden_states = layer(hidden_states)[0]
+        for layer in intervention_layers:
+            # Apply Boundless DAS intervention at specific token positions
+            h_base = hidden_states_base[layer]
+            h_source = hidden_states_source[layer]
+            mixed_h = h_base.clone()
+            for idx in range(h_base.size(0)):  # Batch size
+                pos = positions[idx]
+                for p in pos:
+                    mixed_h[idx, p, :] = subspace_proj_b(h_base[idx, p, :], h_source[idx, p, :].detach())
+            mixed_hidden_states[layer] = mixed_h
+
+        # Continue forward pass from the first intervention layer
+        hidden_states = mixed_hidden_states[intervention_layers[0]]
+        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
+            if idx in intervention_layers:
+                hidden_states = mixed_hidden_states[idx]
+            else:
+                hidden_states = model.transformer.h[idx](hidden_states)[0]
 
         logits = model.lm_head(hidden_states)
 
-        # Compute loss
+        # Compute loss using labels from source
+        loss_fn = torch.nn.CrossEntropyLoss()
         loss = loss_fn(logits.view(-1, logits.size(-1)), labels_source.view(-1))
+
+        # Add boundary loss
+        mask_weight = 1.5
+        boundary_loss = mask_weight * subspace_proj_b.intervention_boundaries.sum()
+        loss += boundary_loss
 
         # Backward pass and optimization
         loss.backward()
-        optimizer.step()
-        scheduler.step()
+        optimizer_b.step()
+        scheduler_b.step()
+
+        # Update temperature
+        subspace_proj_b.set_temperature(temperature_schedule_b[step])
+        step += 1
 
         pbar.set_postfix({'loss': loss.item()})
 
@@ -470,18 +568,37 @@ with torch.no_grad():
         input_ids_base = batch['input_ids_base'].to(device)
         attention_mask_base = batch['attention_mask_base'].to(device)
         labels_source = batch['labels_source'].to(device)
+        input_ids_source = batch['input_ids_source'].to(device)
+        attention_mask_source = batch['attention_mask_source'].to(device)
+        positions = batch['positions']
 
-        # Get base outputs
+        # Forward pass for base and source
         outputs_base = model(input_ids_base, attention_mask=attention_mask_base, output_hidden_states=True)
-        hidden_states_base = outputs_base.hidden_states[intervention_layer]
+        outputs_source = model(input_ids_source, attention_mask=attention_mask_source, output_hidden_states=True)
+        hidden_states_base = outputs_base.hidden_states
+        hidden_states_source = outputs_source.hidden_states
 
-        # Apply Boundless DAS intervention
-        mixed_hidden_states = subspace_proj_b(hidden_states_base, hidden_states_base)  # No swapping here for evaluation
+        # Initialize mixed_hidden_states with base
+        mixed_hidden_states = list(hidden_states_base)
 
-        # Continue forward pass
-        hidden_states = mixed_hidden_states
-        for layer in model.transformer.h[intervention_layer:]:
-            hidden_states = layer(hidden_states)[0]
+        for layer in intervention_layers:
+            # Apply Boundless DAS intervention at specific token positions
+            h_base = hidden_states_base[layer]
+            h_source = hidden_states_source[layer]
+            mixed_h = h_base.clone()
+            for idx in range(h_base.size(0)):  # Batch size
+                pos = positions[idx]
+                for p in pos:
+                    mixed_h[idx, p, :] = subspace_proj_b(h_base[idx, p, :], h_source[idx, p, :])
+            mixed_hidden_states[layer] = mixed_h
+
+        # Continue forward pass from the first intervention layer
+        hidden_states = mixed_hidden_states[intervention_layers[0]]
+        for idx in range(intervention_layers[0] + 1, len(hidden_states_base)):
+            if idx in intervention_layers:
+                hidden_states = mixed_hidden_states[idx]
+            else:
+                hidden_states = model.transformer.h[idx](hidden_states)[0]
 
         logits = model.lm_head(hidden_states)
 
