@@ -24,17 +24,20 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import os
 import pandas as pd
+import copy
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load LLaMA 3.1 8B using Auto classes
+os.environ['TRANSFORMERS_CACHE'] = '/oscar/scratch/dkang33/model_cache'
 model_id = "meta-llama/Llama-3.1-8B"
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
     torch_dtype=torch.bfloat16,
-    #device_map="auto" #(removed as code expects model to be on one device)
+    #device_map="auto" #(removed as code expects model to be on one device),
+    cache_dir=os.environ['TRANSFORMERS_CACHE']
 )
 model.to(device)
 model.eval()
@@ -154,7 +157,7 @@ def label_test_object_in_output(output_text, test_object_line):
 
 def generate_prompt_and_get_token_positions(rule_desc):
     # Define the label pattern
-    label_pattern = ['False', 'True', 'True', 'False', 'True', 'False']
+    label_pattern = ['True', 'False', 'True', 'True', 'False', 'True', 'False', 'True', 'True', 'True', 'False', 'True', 'False']
     # Generate examples according to the label pattern
     examples = generate_examples_for_rule(rule_desc, label_pattern)
     
@@ -175,16 +178,18 @@ def generate_prompt_and_get_token_positions(rule_desc):
 
     # Add examples
     prompt += "Here are some objects and their labels:\n"
-    for example in examples[:5]:  # Use first 5 for initial examples
+    for example in examples[:-1]:  # Use first 5 for initial examples
         prompt += f"{example}\n"
     prompt += "\nLabel the following object:\n"
-    test_object_line = examples[5].split(' -> ')[0]
+    test_object_line = examples[-1].split(' -> ')[0]
     prompt += f"{test_object_line}\n"
     prompt += (
-        "\nProvide the label for the object above, then explain "
-        "the rule you've inferred starting with "
-        "'Based on your examples, I've learned that'\n"
+        '''\nProvide the label for the object above, then explain '''
+        '''the rule you've inferred starting with '''
+        '''"Based on your examples, I've learned that an object should be labeled 'True' if and only if"\n\n'''
     )
+    prompt += test_object_line
+    prompt += " ->"
     
     # Tokenize the prompt
     inputs = tokenizer(prompt, return_tensors='pt').to(device)
@@ -236,15 +241,15 @@ def register_hooks(activations, layer_nums, components_to_capture):
     return handles
 
 
-def find_label_token_positions(inputs, label_to_noise):
+def find_label_token_positions(inputs, label_to_noise='True'):
     """
     Find positions of 'True' or 'False' tokens in the tokenized prompt.
     """
-    label_token_id = tokenizer.convert_tokens_to_ids(label_to_noise)
+    label_token_ids = tokenizer.convert_tokens_to_ids(['True', 'ĠTrue', 'False', 'ĠFalse'])
     positions = []
     input_ids = inputs['input_ids'][0]
     for idx, token_id in enumerate(input_ids):
-        if token_id == label_token_id:
+        if token_id in label_token_ids:
             positions.append(idx)
     return positions
 
@@ -252,19 +257,25 @@ def add_noise_to_token_embeddings(inputs, token_positions, noise_level=0.1):
     """
     Add Gaussian noise to the embeddings of specific tokens.
     """
+    inputs_noisy = copy.deepcopy(inputs)
     with torch.no_grad():
         embedding_layer = model.model.embed_tokens  # Update for LLaMA
         # Get the original embeddings
-        input_embeddings = embedding_layer(inputs['input_ids'])
+        input_embeddings = embedding_layer(inputs_noisy['input_ids'])
         # Generate noise
         noise = torch.randn_like(input_embeddings) * noise_level
         # Add noise to specific token positions
         for pos in token_positions:
             input_embeddings[0, pos, :] += noise[0, pos, :]
         # Replace the input_ids with embeddings
-        inputs['inputs_embeds'] = input_embeddings
-        inputs.pop('input_ids', None)
-    return inputs
+        inputs_noisy['inputs_embeds'] = input_embeddings
+        inputs_noisy.pop('input_ids', None)
+    return inputs_noisy
+
+
+
+
+# START OF EXPERIMENT___________________________________________
 
 # Total number of layers in the model
 num_layers = model.config.num_hidden_layers
@@ -281,6 +292,8 @@ layer_step_size = 6
 # Proportion of interventions to perform
 intervention_proportion = 0.1 # Adjust this value as needed (e.g., 0.5 for 50%)
 
+print("starting experiment")
+
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
     # Open a log file to write outputs
@@ -294,6 +307,8 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         generate_prompt_and_get_token_positions(rule_description)
     input_prompt = prompt  # Save the prompt for records
     max_new_tokens = 50  # Increase to capture longer explanations
+
+    print(input_prompt)
 
     # Initialize variables to store runs
     correct_run = None
@@ -309,9 +324,14 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             pad_token_id=tokenizer.pad_token_id,
         )
 
-    output_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
+    total_text = tokenizer.decode(output_sequences[0], skip_special_tokens=True)
+    output_text = total_text[len(input_prompt)-31:]
     assigned_label = label_test_object_in_output(output_text, test_object_line)
     true_label = label_object(test_object_line, rule_description)
+
+    print("\nOutput Text:\n" + output_text)
+    print("\nAssigned Label:\n" + assigned_label)
+    print("\nTrue Label:\n" + true_label)
 
     # Store the base run activations
     activations_base = {}
@@ -337,21 +357,27 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         }
 
     # Identify the label to noise (opposite of the assigned label)
-    if assigned_label == 'True':
-        label_to_noise = 'True'
-    else:
-        label_to_noise = 'False'
+    # if assigned_label == 'True':
+    #     label_to_noise = ' True'
+    # else:
+    #     label_to_noise = ' False'
 
     # Find positions of the label tokens in the prompt
-    label_token_positions = find_label_token_positions(inputs, label_to_noise=label_to_noise)
+    label_token_positions = find_label_token_positions(inputs)
+    label_token_positions.pop(0)
+    label_token_positions.pop(0)
 
     # Attempt to flip the output by adding noise
     flip_obtained = False
-    noise_level = 0.3  # Adjust as needed
+    noise_level = 0.5  # Adjust as needed
+    
+    noise_pos_count = 0
+    noise_pos_list = []
     for pos in label_token_positions:
+        noise_pos_count += 1
+        noise_pos_list.append(pos)
         # Create a new input with noise added at position 'pos'
-        inputs_noisy = tokenizer(prompt, return_tensors='pt').to(device)
-        inputs_noisy = add_noise_to_token_embeddings(inputs_noisy, [pos], noise_level=noise_level)
+        inputs_noisy = add_noise_to_token_embeddings(inputs, noise_pos_list, noise_level=noise_level)
         # Run the model with the noisy input
         activations_noisy = {}
         # Register hooks to capture activations
@@ -369,8 +395,12 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         for handle in handles:
             handle.remove()
         # Decode the output
-        output_text_noisy = tokenizer.decode(output_sequences_noisy[0], skip_special_tokens=True)
+        output_text_noisy = test_object_line + " ->" + tokenizer.decode(output_sequences_noisy[0], skip_special_tokens=True)
         assigned_label_noisy = label_test_object_in_output(output_text_noisy, test_object_line)
+
+        print("\nNo. Noised: " + str(noise_pos_count))
+        print("\nNoisy Output Text:\n" + str(output_text_noisy))
+        print("\nNoisy Assigned Label:\n" + assigned_label_noisy)
 
         # Check if the categorization output has flipped
         if assigned_label_noisy != assigned_label and assigned_label_noisy is not None:
@@ -378,11 +408,15 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             break  # Exit the loop once the flip is obtained
 
     if not flip_obtained:
+        print("\nnot flipped")
         # Optionally, try increasing noise level or adding noise to more tokens
-        log_file.write(f"Could not flip the output by adding noise to '{label_to_noise}' tokens.\n")
+        # log_file.write(f"Could not flip the output by adding noise to '{label_to_noise}' tokens.\n")
+        log_file.write(f"Could not flip the output by adding noise to label tokens.\n")
+
         log_file.close()
         continue  # Skip to the next rule or handle this case accordingly
     else:
+        print("\nflipped")
         # Save the runs
         if assigned_label == true_label:
             correct_run = base_run

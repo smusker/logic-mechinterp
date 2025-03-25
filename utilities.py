@@ -14,7 +14,7 @@ def exponential_backoff(api_call, max_retries=5, base_delay=1):
 
 def api_call(prompt):
     response = openai.ChatCompletion.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         messages=[{"role": "system", "content": "You are a logical reasoning assistant."},
                   {"role": "user", "content": prompt}],
         temperature=0.0
