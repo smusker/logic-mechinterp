@@ -12,11 +12,15 @@ from transformers import (
     AutoModelForCausalLM,
     set_seed,
 )
+from pyvene import BoundlessRotatedSpaceIntervention
+
+"""
 try:
     from pyvene import BoundlessRotatedSpaceIntervention
 except ImportError:
     !pip install git+https://github.com/stanfordnlp/pyvene.git
     from pyvene import BoundlessRotatedSpaceIntervention
+"""
 
 ###############################################################################
 # EXPERIMENT 2: BOUNDLESS DAS WITH INSTRUCTION-TUNED LLAMA 3.1 8B
@@ -41,9 +45,10 @@ if tokenizer.pad_token is None:
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.float16,
-    device_map="auto"
+    #device_map="auto" #test run single gpu
 )
-model.to(device)
+#model.to(device) #test run single gpu
+model.to("cuda:0")
 model.eval()
 
 ###############################################################################
