@@ -119,7 +119,11 @@ def pad_seq(seq, max_len, pad_token_id, label_pad=-100):
         padvec = torch.full((need,), label_pad, dtype=seq.dtype)
         return torch.cat([seq, padvec], dim=0)
 
-num_samples = 20000
+num_samples = 100 #test run was 20000
+intervention_samples = 100 #test run was 10000
+num_epochs = 1 #test run was 2
+
+
 data_list = []
 for _ in tqdm(range(num_samples), desc="Generating dataset"):
     ex = generate_example()
@@ -242,8 +246,8 @@ def prep_intervention_data(cmodel_func, n=10000):
     loader = DataLoader(ds, batch_size=8)
     return loader
 
-loader_a = prep_intervention_data(causal_model_a, n=10000)
-loader_b = prep_intervention_data(causal_model_b, n=10000)
+loader_a = prep_intervention_data(causal_model_a, n=intervention_samples)
+loader_b = prep_intervention_data(causal_model_b, n=intervention_samples)
 
 for param in model.parameters():
     param.requires_grad = False
@@ -253,7 +257,7 @@ for param in model.parameters():
 ###############################################################################
 
 layers_to_intervene = [0, 5, 10, 15, 20, 25, 30]
-epochs = 2
+epochs = num_epochs
 subspace_proj_a = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size).to(device)
 opt_a = torch.optim.Adam([
     {"params": subspace_proj_a.rotate_layer.parameters()},
@@ -363,7 +367,7 @@ def swap_and_check_a(inb, ab, insrc, asrc, lbsrc, layer_win, token_win):
 layers_list = [(i, min(i+layer_step, num_layers)) for i in range(0,num_layers,layer_step)]
 tokens_list = [(i, min(i+token_step, max_tokens)) for i in range(0,max_tokens,token_step)]
 
-total_evals = 200
+total_evals = 5 #test run was 200
 eval_batches = 0
 with torch.no_grad():
     for batch in tqdm(loader_a, desc="Eval IIA Heatmap A"):
