@@ -1,144 +1,162 @@
-# xor_boundless_das.py
-# ---------------------------------------------------------------------
-# identical imports to the paper’s tutorial
-# ---------------------------------------------------------------------
-import torch, random, numpy as np, os
-from torch.nn import CrossEntropyLoss
-from torch.utils.data import DataLoader
-from tqdm.auto import tqdm, trange
-from transformers import set_seed
+# xor_boundless_das_llama3.py
+# =====================================================================
+#  Experiment:  Boundless DAS on Meta-Llama-3-8B-Instruct
+# =====================================================================
 
-# pyvene helpers
+import os, random, numpy as np, torch
+from torch.nn import CrossEntropyLoss
+from tqdm.auto import tqdm
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    set_seed,
+)
+
 from pyvene import (
-    create_llama,
     IntervenableModel,
     RepresentationConfig,
     IntervenableConfig,
     BoundlessRotatedSpaceIntervention,
+    count_parameters,
 )
-from pyvene import count_parameters
 
-# local data utils
 from xor_utils import (
-    build_loader, cf_pair_model_A, cf_pair_model_B
+    build_loader,
+    cf_pair_model_A,
+    cf_pair_model_B,
 )
 
-# reproducibility ------------------------------------------------------
+# 0 ────────────────────────────────────────────────────────────────────
+#  reproducibility
+# ---------------------------------------------------------------------
 set_seed(42); random.seed(42); np.random.seed(42)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
+# 1 ────────────────────────────────────────────────────────────────────
+#  load Llama-3-8B-Instruct
 # ---------------------------------------------------------------------
-# load the same Alpaca/LLaMA-7B that the price-tagging notebook used
-# ---------------------------------------------------------------------
-cfg, tok, llama = create_llama()
-llama.to("cuda"); llama.eval()
+MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
 
-# ---------------------------------------------------------------------
-# build counter-factual datasets
-# ---------------------------------------------------------------------
-train_A = build_loader(tok, cf_pair_model_A,  8000, batch_size=16)
-eval_A  = build_loader(tok, cf_pair_model_A,  1000, batch_size=16, shuffle=False)
-test_A  = build_loader(tok, cf_pair_model_A,  1000, batch_size=16, shuffle=False)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+if tokenizer.pad_token is None:               # add pad token if missing
+    tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
 
-train_B = build_loader(tok, cf_pair_model_B,  8000, batch_size=16)
-eval_B  = build_loader(tok, cf_pair_model_B,  1000, batch_size=16, shuffle=False)
-test_B  = build_loader(tok, cf_pair_model_B,  1000, batch_size=16, shuffle=False)
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.bfloat16,               # bf16 fits on 24-GB GPU
+    device_map="auto",
+)
+model.eval()
 
-# ---------------------------------------------------------------------
-# create IntervenableModel (layer 12, token index −2 i.e. penultimate)
-# ---------------------------------------------------------------------
-LAYER  = 12
-intervene_token = -2          # constant index across prompts
+print(f"Model hidden size: {model.config.hidden_size}")
 
-def build_intervenable():
-    cfg_int = IntervenableConfig(
-        model_type = type(llama),
-        representations=[RepresentationConfig(LAYER, "block_output")],
-        intervention_types = BoundlessRotatedSpaceIntervention,
+# 2 ────────────────────────────────────────────────────────────────────
+#  build counter-factual datasets
+# ---------------------------------------------------------------------
+train_A = build_loader(tokenizer, cf_pair_model_A,  8000, batch_size=16)
+eval_A  = build_loader(tokenizer, cf_pair_model_A,  1000, batch_size=16, shuffle=False)
+test_A  = build_loader(tokenizer, cf_pair_model_A,  1000, batch_size=16, shuffle=False)
+
+train_B = build_loader(tokenizer, cf_pair_model_B,  8000, batch_size=16)
+eval_B  = build_loader(tokenizer, cf_pair_model_B,  1000, batch_size=16, shuffle=False)
+test_B  = build_loader(tokenizer, cf_pair_model_B,  1000, batch_size=16, shuffle=False)
+
+# 3 ────────────────────────────────────────────────────────────────────
+#  Build IntervenableModel  (layer 12, penultimate token)
+# ---------------------------------------------------------------------
+LAYER_TO_PROBE   = 12
+TOKEN_TO_PROBE   = -2            # constant across fixed-length prompt
+
+def make_intervenable():
+    cfg_intv = IntervenableConfig(
+        model_type          = type(model),          # IMPORTANT CHANGE
+        representations     = [RepresentationConfig(LAYER_TO_PROBE, "block_output")],
+        intervention_types  = BoundlessRotatedSpaceIntervention,
     )
-    m = IntervenableModel(cfg_int, llama)
-    m.set_device("cuda")
-    m.disable_model_gradients()
-    return m
+    iv = IntervenableModel(cfg_intv, model)
+    iv.set_device(device)
+    iv.disable_model_gradients()
+    return iv
 
+# 4 ────────────────────────────────────────────────────────────────────
+#  generic trainer (same as tutorial)
 # ---------------------------------------------------------------------
-# training routine borrowed verbatim from tutorial
-# ---------------------------------------------------------------------
-def train_boundless_das(intervenable, dataloader, epochs=3):
-    intv = list(intervenable.interventions.values())[0]   # a shortcut
-    params = [
-        {"params": intv.rotate_layer.parameters()},
-        {"params": intv.intervention_boundaries, "lr":1e-2},
-    ]
-    opt = torch.optim.Adam(params, lr=1e-3)
+def train_das(intervenable, dataloader, epochs=2):
+    intv = list(intervenable.interventions.values())[0]
+    optim = torch.optim.Adam(
+        [
+            {"params": intv.rotate_layer.parameters()},
+            {"params": intv.intervention_boundaries, "lr":1e-2},
+        ],
+        lr=1e-3,
+    )
     total_steps = epochs * len(dataloader)
-    warmup = int(0.1*total_steps)
-    scheduler = torch.optim.lr_scheduler.LinearLR(
-        opt, start_factor=1.0, end_factor=0.0, total_iters=total_steps
-    )
-    temp_sched = torch.linspace(50., 0.1, total_steps, device="cuda")
-
+    temp_sched  = torch.linspace(50.0, 0.1, total_steps, device=device)
     step = 0
+
     for ep in range(epochs):
         pbar = tqdm(dataloader, desc=f"epoch {ep}")
         for batch in pbar:
-            opt.zero_grad()
-            for k,v in batch.items():
-                batch[k]=v.to("cuda")
+            for k,v in batch.items(): batch[k] = v.to(device)
+            optim.zero_grad()
+
             _, cf = intervenable(
-                    {"input_ids":batch["input_ids"]},
-                    [{"input_ids":batch["source_input_ids"]}],
-                    {"sources->base": intervene_token},
-                 )
+                {"input_ids": batch["input_ids"]},
+                [{"input_ids": batch["source_input_ids"]}],
+                {"sources->base": TOKEN_TO_PROBE},
+            )
             loss = CrossEntropyLoss()(
-                     cf.logits.view(-1, cf.logits.size(-1)),
-                     batch["labels"].view(-1)
-                   )
-            loss += 1.0*intv.intervention_boundaries.sum()
-            loss.backward(); opt.step(); scheduler.step()
-            intv.set_temperature(temp_sched[step]); step+=1
+                    cf.logits.view(-1, cf.logits.size(-1)),
+                    batch["labels"].view(-1))
+            loss += intv.intervention_boundaries.sum()   # small L1
+            loss.backward(); optim.step()
+            intv.set_temperature(temp_sched[step]); step += 1
             pbar.set_postfix({"loss": round(loss.item(),2)})
 
+# 5 ────────────────────────────────────────────────────────────────────
+#  IIA computation
 # ---------------------------------------------------------------------
-# interchange-intervention accuracy (IIA)
-# ---------------------------------------------------------------------
+@torch.no_grad()
 def compute_iia(intervenable, dataloader):
-    total, correct = 0, 0
-    with torch.no_grad():
-        for batch in dataloader:
-            for k,v in batch.items(): batch[k]=v.to("cuda")
-            _, cf = intervenable(
-                  {"input_ids":batch["input_ids"]},
-                  [{"input_ids":batch["source_input_ids"]}],
-                  {"sources->base": intervene_token},
-            )
-            preds = cf.logits.argmax(-1)
-            mask = (batch["labels"] != -100)
-            total   += mask.sum().item()
-            correct += ((preds==batch["labels"]) & mask).sum().item()
-    return correct/total
+    total = correct = 0
+    for batch in dataloader:
+        for k,v in batch.items(): batch[k]=v.to(device)
+        _, cf = intervenable(
+            {"input_ids": batch["input_ids"]},
+            [{"input_ids": batch["source_input_ids"]}],
+            {"sources->base": TOKEN_TO_PROBE},
+        )
+        pred = cf.logits.argmax(-1)
+        mask = batch["labels"] != -100
+        total   += mask.sum().item()
+        correct += ((pred == batch["labels"]) & mask).sum().item()
+    return correct / total
 
+# 6 ────────────────────────────────────────────────────────────────────
+#  run Model A
 # ---------------------------------------------------------------------
-# 1. Model A  ----------------------------------------------------------
-# ---------------------------------------------------------------------
-iva = build_intervenable()
-print("∎ training Model A alignment")
-train_boundless_das(iva, train_A, epochs=2)
-iia_A = compute_iia(iva, test_A)
+iv_A = make_intervenable()
+print("\n⫸  Training alignment for causal Model A (single XOR)")
+train_das(iv_A, train_A, epochs=2)
+iia_A = compute_iia(iv_A, test_A)
 print(f"IIA (Model A) = {iia_A:.2%}")
 
+# 7 ────────────────────────────────────────────────────────────────────
+#  run Model B
 # ---------------------------------------------------------------------
-# 2. Model B  ----------------------------------------------------------
-# ---------------------------------------------------------------------
-ivb = build_intervenable()
-print("∎ training Model B alignment")
-train_boundless_das(ivb, train_B, epochs=2)
-iia_B = compute_iia(ivb, test_B)
+iv_B = make_intervenable()
+print("\n⫸  Training alignment for causal Model B (decomposed)")
+train_das(iv_B, train_B, epochs=2)
+iia_B = compute_iia(iv_B, test_B)
 print(f"IIA (Model B) = {iia_B:.2%}")
 
+# 8 ────────────────────────────────────────────────────────────────────
+#  verdict
 # ---------------------------------------------------------------------
-# final verdict
-# ---------------------------------------------------------------------
-print("\n────────  RESULT  ────────")
-if iia_A > iia_B: print("Network matches single-XOR causal model A.")
-elif iia_B > iia_A: print("Network matches decomposed model B.")
-else:              print("Tie – both abstractions fit equally well.")
+print("\n──────────  RESULT  ──────────")
+if iia_A > iia_B:
+    print("► The network’s internal computation matches SINGLE-XOR Model A.")
+elif iia_B > iia_A:
+    print("► The network’s internal computation matches DECOMPOSED Model B.")
+else:
+    print("► Tie – both causal abstractions fit equally well.")
