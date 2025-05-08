@@ -1,3 +1,5 @@
+#probably deprecated. Moving to xor_boundless_das / xor_utils to realign closer to the price tagging implementation. 
+
 import sys
 import os
 import random
