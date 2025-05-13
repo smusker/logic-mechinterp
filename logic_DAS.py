@@ -1,7 +1,11 @@
+#probably deprecated. Moving to xor_boundless_das / xor_utils to realign closer to the price tagging implementation. 
+
 import sys
 import os
 import random
 import numpy as np
+
+
 import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -12,11 +16,15 @@ from transformers import (
     AutoModelForCausalLM,
     set_seed,
 )
+from pyvene import BoundlessRotatedSpaceIntervention
+
+"""
 try:
     from pyvene import BoundlessRotatedSpaceIntervention
 except ImportError:
     !pip install git+https://github.com/stanfordnlp/pyvene.git
     from pyvene import BoundlessRotatedSpaceIntervention
+"""
 
 ###############################################################################
 # EXPERIMENT 2: BOUNDLESS DAS WITH INSTRUCTION-TUNED LLAMA 3.1 8B
@@ -41,9 +49,10 @@ if tokenizer.pad_token is None:
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.float16,
-    device_map="auto"
+    #device_map="auto" #test run single gpu
 )
-model.to(device)
+#model.to(device) #test run single gpu
+model.to("cuda:0")
 model.eval()
 
 ###############################################################################
@@ -119,7 +128,11 @@ def pad_seq(seq, max_len, pad_token_id, label_pad=-100):
         padvec = torch.full((need,), label_pad, dtype=seq.dtype)
         return torch.cat([seq, padvec], dim=0)
 
-num_samples = 20000
+num_samples = 100 #test run was 20000
+intervention_samples = 100 #test run was 10000
+num_epochs = 1 #test run was 2
+
+
 data_list = []
 for _ in tqdm(range(num_samples), desc="Generating dataset"):
     ex = generate_example()
@@ -141,7 +154,7 @@ train_data = split_data["train"]
 val_data = split_data["test"]
 train_data.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 val_data.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-batch_size = 8
+batch_size = 1 #test run was 8
 train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False)
 
@@ -239,11 +252,11 @@ def prep_intervention_data(cmodel_func, n=10000):
         "input_ids_base","attn_base","labels_base",
         "input_ids_source","attn_source","labels_source"
     ])
-    loader = DataLoader(ds, batch_size=8)
+    loader = DataLoader(ds, batch_size=batch_size)
     return loader
 
-loader_a = prep_intervention_data(causal_model_a, n=10000)
-loader_b = prep_intervention_data(causal_model_b, n=10000)
+loader_a = prep_intervention_data(causal_model_a, n=intervention_samples)
+loader_b = prep_intervention_data(causal_model_b, n=intervention_samples)
 
 for param in model.parameters():
     param.requires_grad = False
@@ -253,7 +266,7 @@ for param in model.parameters():
 ###############################################################################
 
 layers_to_intervene = [0, 5, 10, 15, 20, 25, 30]
-epochs = 2
+epochs = num_epochs
 subspace_proj_a = BoundlessRotatedSpaceIntervention(embed_dim=model.config.hidden_size).to(device)
 opt_a = torch.optim.Adam([
     {"params": subspace_proj_a.rotate_layer.parameters()},
@@ -289,7 +302,11 @@ for ep in range(epochs):
             hb_clone = hb.clone()
             for bidx in range(hb.size(0)):
                 for tidx in range(hb.size(1)):
-                    hb_clone[bidx, tidx, :] = subspace_proj_a(hb[bidx,tidx,:], hs[bidx,tidx,:].detach())
+                    base_vec = hb[bidx, tidx, :].unsqueeze(0)
+                    source_vec = hs[bidx, tidx, :].unsqueeze(0).detach()
+                    rotated = subspace_proj_a(base_vec, source_vec)
+                    rotated = rotated.squeeze(0)
+                    hb_clone[bidx, tidx, :] = rotated
             mixed[lay] = hb_clone
 
         # Forward from the lowest intervened layer
@@ -344,7 +361,11 @@ def swap_and_check_a(inb, ab, insrc, asrc, lbsrc, layer_win, token_win):
         max_toks = min(hb.size(1), te)
         for bidx in range(hb.size(0)):
             for tidx in range(ts, max_toks):
-                hb[bidx, tidx, :] = subspace_proj_a(hidden_b[lay][bidx,tidx,:], hs[bidx,tidx,:])
+                base_vec = hidden_b[lay][bidx, tidx, :].unsqueeze(0)  # shape [1, hidden_dim]
+                source_vec = hs[bidx, tidx, :].unsqueeze(0)           # shape [1, hidden_dim]
+                rotated = subspace_proj_a(base_vec, source_vec)       # shape [1, hidden_dim]
+                rotated = rotated.squeeze(0)                          # shape [hidden_dim]
+                hb[bidx, tidx, :] = rotated
         mixed[lay] = hb
     hidden_states = mixed[ls]
     for li in range(ls+1, len(hidden_b)):
@@ -363,7 +384,7 @@ def swap_and_check_a(inb, ab, insrc, asrc, lbsrc, layer_win, token_win):
 layers_list = [(i, min(i+layer_step, num_layers)) for i in range(0,num_layers,layer_step)]
 tokens_list = [(i, min(i+token_step, max_tokens)) for i in range(0,max_tokens,token_step)]
 
-total_evals = 200
+total_evals = 5 #test run was 200
 eval_batches = 0
 with torch.no_grad():
     for batch in tqdm(loader_a, desc="Eval IIA Heatmap A"):
@@ -432,7 +453,11 @@ for ep in range(epochs):
             hb_clone = hb.clone()
             for bidx in range(hb.size(0)):
                 for tidx in range(hb.size(1)):
-                    hb_clone[bidx, tidx, :] = subspace_proj_b(hb[bidx,tidx,:], hs[bidx,tidx,:].detach())
+                    base_vec = hb[bidx, tidx, :].unsqueeze(0)
+                    source_vec = hs[bidx, tidx, :].unsqueeze(0).detach()
+                    rotated = subspace_proj_b(base_vec, source_vec)
+                    rotated = rotated.squeeze(0)
+                    hb_clone[bidx, tidx, :] = rotated
             mixed[lay] = hb_clone
 
         hidden_states = mixed[layers_to_intervene[0]]
@@ -475,7 +500,11 @@ def swap_and_check_b(inb, ab, insrc, asrc, lbsrc, layer_win, token_win):
         max_toks = min(hb.size(1), te)
         for bidx in range(hb.size(0)):
             for tidx in range(ts, max_toks):
-                hb[bidx, tidx, :] = subspace_proj_b(hidden_b[lay][bidx,tidx,:], hs[bidx,tidx,:])
+                base_vec = hidden_b[lay][bidx, tidx, :].unsqueeze(0)  # shape [1, hidden_dim]
+                source_vec = hs[bidx, tidx, :].unsqueeze(0)           # shape [1, hidden_dim]
+                rotated = subspace_proj_b(base_vec, source_vec)       # shape [1, hidden_dim]
+                rotated = rotated.squeeze(0)                          # shape [hidden_dim]
+                hb[bidx, tidx, :] = rotated
         mixed[lay] = hb
     hidden_states = mixed[ls]
     for li in range(ls+1, len(hidden_b)):
