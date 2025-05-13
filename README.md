@@ -1,7 +1,7 @@
 Set up and run: 
 
 start logic_env
-salloc -J interact -p 3090-gcondo -N 1-1 -n 1 --time 01:00:00 --gpus 3 --cpus-per-task 2 --mem 80G
+salloc -J interact -p 3090-gcondo -N 1-1 -n 1 --time 05:00:00 --gpus 3 --cpus-per-task 2 --mem 80G
 pip install -r requirements.txt
 export OPENAI_API_KEY=...
 pip install huggingface_hub

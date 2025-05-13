@@ -1,0 +1,39 @@
+
+--- Processing hg05: An object is labeled 'True' if it is not a CIR. ---
+
+Output Text: <|begin_of_text|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=BLU Shape=CIR -> False
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if it is a rectangle (REC) and its size is either small (S) or large (L), regardless of the color.<|eot_id|>
+True Label:
+False
+Base Run
+Text:<|begin_of_text|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=BLU Shape=CIR -> False
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if it is a rectangle (REC) and its size is either small (S) or large (L), regardless of the color.<|eot_id|>
+Assigned Label:False
+Rule: it is a rectangle (REC) and its size is either small (S) or large (L), regardless of the color.<|eot_id|
+Noised Run
+Text:- Size=L Color=BLU Shape=CIR -><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=BLU Shape=CIR -> True
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if the shape is a rectangle (REC).<|eot_id|>
+Assigned Label:True
+Rule: the shape is a rectangle (REC).<|eot_id|
+
+
+For hg05, there were 9 interventions resulting in a change of categorization,
+and 0 of these also resulted in a corresponding rule change,
+indicating that the rule elicitation co-varies 0.00% of the time with changes of categorizations.
+Out of the co-flips, 9 had consistent rules and categorizations,
+resulting in a consistency rate of 0.00% among co-flips.
+Co-flip heatmap saved as heatmaps/hg05_block_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg05_block_output_consistency.png
+Co-flip heatmap saved as heatmaps/hg05_mlp_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg05_mlp_output_consistency.png
+Co-flip heatmap saved as heatmaps/hg05_attention_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg05_attention_output_consistency.png

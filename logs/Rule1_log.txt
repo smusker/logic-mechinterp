@@ -1,3 +1,0 @@
-
---- Processing Rule1: An object is labeled 'True' if it is BLU or a REC. ---
-

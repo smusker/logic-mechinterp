@@ -1,0 +1,251 @@
+Rule ID,Rule Description,Task Number,Test Object,Clean Rule,Corrupt Rule
+hg05,An object is labeled 'True' if it is not a CIR.,0,- Size=L Color=BLU Shape=CIR -> False,"
+ it is either a triangle (TRI) or a rectangle (REC) of any size and color, or a large (L) circle (CIR) of any color.<|eot_id|","
+ it is a rectangle (REC) and its color is green (GRN) or yellow (YEL).<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,1,- Size=S Color=BLU Shape=CIR -> False,"
+ it is a rectangle (REC) and its size is either medium (M) or small (S).<|eot_id|","
+ it is a triangle (TRI) and its size is not large (L).<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,2,- Size=M Color=YEL Shape=REC -> True,"
+ it is a rectangle (REC) and its color is yellow (YEL), regardless of its size.<|eot_id|","
+ it is a triangle (TRI) and its size is medium (M).<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,3,- Size=M Color=BLU Shape=REC -> True,"
+ it is a rectangle and its color is blue.<|eot_id|","
+ it is a triangle and its size is small or large.<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,4,- Size=M Color=BLU Shape=CIR -> False,"
+ it is a rectangle (REC) and its color is green (GRN).<|eot_id|","
+ it is a rectangle (REC) and its size is medium (M).<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,5,- Size=L Color=GRN Shape=CIR -> False,"
+ it is a rectangle and its color is blue.<|eot_id|","
+ it is a medium size and a green color.<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,6,- Size=S Color=BLU Shape=REC -> True,"
+ it is small and green or it is medium and blue or it is large and any color or it is large and green and any shape.<|eot_id|","
+ it is small and green and a triangle.<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,7,- Size=L Color=BLU Shape=CIR -> False,"
+ it is a rectangle (REC) and its size is either small (S) or medium (M).<|eot_id|","
+ it is a rectangle (REC) and its size is not small (S).<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,8,- Size=L Color=YEL Shape=TRI -> True,"
+ it is a triangle and its size is large, or it is a rectangle and its size is medium.<|eot_id|","
+ it is a triangle and its size is not medium.<|eot_id|
+
+"
+hg05,An object is labeled 'True' if it is not a CIR.,9,- Size=L Color=YEL Shape=CIR -> False,"
+ it is a rectangle and its color is green.<|eot_id|","
+ it is a rectangle (REC) and its color is green (GRN).<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,0,- Size=M Color=YEL Shape=REC -> False,"
+ it is either a circle and small or a triangle and blue.<|eot_id|","
+ it is a circle and its size is small or medium.<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,1,- Size=S Color=GRN Shape=TRI -> False,"
+ it is small (S) and blue (BLU) and a triangle (TRI).<|eot_id|","
+ it is small (S) and blue (BLU) or yellow (YEL) and circular (CIR).<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,2,- Size=M Color=BLU Shape=TRI -> True,"
+ it is a circle and its size is either medium or large.<|eot_id|","
+ it is a circle (CIR) and its size is either small (S) or large (L).<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,3,- Size=S Color=BLU Shape=CIR -> True,"
+ it is a circle and blue, or a small triangle.<|eot_id|","
+ it is either a circle (CIR) and its size is small (S) or its color is blue (BLU) and its shape is a triangle (TRI) or a rectangle (REC) and its size is small (S) or its color is blue (BLU).<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,4,- Size=M Color=YEL Shape=REC -> False,"
+ it is a triangle and its size is either small or large.<|eot_id|","
+ it is a medium size and blue color.<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,5,- Size=S Color=GRN Shape=TRI -> False,"
+ it is either a circle (CIR) and its size is large (L) or its color is blue (BLU), regardless of its size, or its size is small (S) and its color is blue (BLU).<|eot_id|","
+ it is a circle and its size is large.<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,6,- Size=S Color=YEL Shape=CIR -> True,"
+ it is either a circle (CIR) and its size is small (S) or its color is yellow (YEL) and its shape is a circle (CIR).<|eot_id|","
+ it is either a circle and yellow or a small triangle.<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,7,- Size=L Color=GRN Shape=CIR -> True,"
+ it is either a circle (CIR) and its size is small (S) or medium (M), or it is a rectangle (REC) and its color is blue (BLU).<|eot_id|","
+ it is a circle and its size is large.<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,8,- Size=S Color=BLU Shape=CIR -> True,"
+ it is small (S) and its color is blue (BLU) or its shape is a circle (CIR).<|eot_id|","
+ it is a circle and its size is either small or medium.<|eot_id|
+
+"
+hg06,An object is labeled 'True' if it is BLU or a CIR.,9,- Size=S Color=GRN Shape=TRI -> False,"
+ it is either a circle (CIR) and its size is either medium (M) or large (L), or its size is small (S) and its color is yellow (YEL).<|eot_id|","
+ it is a circle and its size is either small or large.<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,0,- Size=L Color=YEL Shape=TRI -> True,"
+ it is a circle and its size is medium or large.<|eot_id|","
+ it is a circle and its size is either small or medium.<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,1,- Size=S Color=BLU Shape=CIR -> True,"
+ it is small (S) and yellow (YEL) or it is any size and a triangle (TRI).<|eot_id|","
+ it is a small object and its color is yellow.<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,2,- Size=S Color=YEL Shape=REC -> False,"
+ it is either a triangle (TRI) and its size is large (L) or its color is blue (BLU), regardless of its shape.<|eot_id|","
+ it is a small (S) yellow (YEL) circle (CIR).<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,3,- Size=L Color=YEL Shape=REC -> False,"
+ it is either a triangle (TRI) and its color is blue (BLU) or its size is small (S).<|eot_id|","
+ it is a triangle (TRI) and its color is yellow (YEL), regardless of its size.<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,4,- Size=S Color=BLU Shape=TRI -> True,"
+ it is either a large yellow circle or a large blue circle.<|eot_id|","
+ it is large (L) and its color is yellow (YEL) and its shape is a circle (CIR).<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,5,- Size=S Color=YEL Shape=CIR -> True,"
+ it is small (S) and either yellow (YEL) or blue (BLU) and its shape is a circle (CIR) or triangle (TRI).<|eot_id|","
+ it is either a circle (CIR) and its size is small (S) or its color is yellow (YEL).<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,6,- Size=S Color=GRN Shape=REC -> False,"
+ it is either a circle (CIR) and its size is either small (S) or large (L), or it is a triangle (TRI) and its color is blue (BLU) or green (GRN).<|eot_id|","
+ it is a small circle (Size=S Color=YEL Shape=CIR) or a large green or blue circle or triangle (Size=L Color=GRN Shape=CIR, Size=L Color=BLU Shape=CIR, Size=M Color=BLU Shape=TRI, Size=L Color=GRN Shape=TRI, Size=M Color=BLU Shape=CIR).<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,7,- Size=S Color=YEL Shape=CIR -> True,"
+ it is a triangle (TRI) and its size is either small (S) or large (L).<|eot_id|","
+ it is a triangle and its size is not medium.<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,8,- Size=M Color=GRN Shape=CIR -> True,"
+ it is green and a circle.<|eot_id|","
+ it is green and a triangle.<|eot_id|
+
+"
+hg07,An object is labeled 'True' if it is a CIR or a TRI.,9,- Size=M Color=BLU Shape=REC -> False,"
+ it is either small (S) and green (GRN) or medium (M) and yellow (YEL) or large (L) and yellow (YEL) or large (L) and blue (BLU) or large (L) and triangle (TRI).<|eot_id|","
+ it is a circle (CIR) and its size is either small (S) or medium (M).<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,0,- Size=L Color=GRN Shape=CIR -> True,"
+ it is yellow and a circle.<|eot_id|","
+ it is a circle and its size is small.<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,1,- Size=S Color=YEL Shape=REC -> False,"
+ it is either a circle and its size is either small or large.<|eot_id|","
+ it is either a circle and yellow or a large circle.<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,2,- Size=L Color=GRN Shape=CIR -> True,"
+ it is a circle and its size is large.<|eot_id|","
+ it is a circle and its size is large.<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,3,- Size=M Color=GRN Shape=REC -> False,"
+ it is either small (S) and green (GRN) or large (L) and any color, or medium (M) and yellow (YEL) and any shape, or small (S) and any color and circle (CIR).<|eot_id|","
+ it is a circle (CIR) and its size is either small (S) or large (L).<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,4,- Size=M Color=YEL Shape=CIR -> True,"
+ it is a circle and its size is either small or large.<|eot_id|","
+ it is a circle and its size is either small or large.<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,5,- Size=L Color=BLU Shape=TRI -> False,"
+ it is either small (S) and green (GRN) and a circle (CIR), or medium (M) and yellow (YEL) and a circle (CIR).<|eot_id|","
+ it is large and a circle.<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,6,- Size=M Color=GRN Shape=TRI -> False,"
+ it is either a circle (CIR) and its size is either small (S) or large (L), or it is a yellow (YEL) circle (CIR) regardless of size.<|eot_id|","
+ it is either small (S) and green (GRN) or large (L) and a circle (CIR).<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,7,- Size=S Color=YEL Shape=CIR -> True,"
+ it is either small (S) and yellow (YEL) or large (L) and any color, or small (S) and green (GRN).<|eot_id|","
+ it is either small (S) and yellow (YEL) or large (L) and any color, or small (S) and green (GRN) or blue (BLU) and any shape, or medium (M) and yellow (YEL) or green (GRN) and circle (CIR).<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,8,- Size=M Color=GRN Shape=CIR -> True,"
+ it is a circle and its size is medium.<|eot_id|","
+ it is a circle and its size is not large.<|eot_id|
+
+"
+hg10,An object is labeled 'True' if it is a CIR and not BLU.,9,- Size=L Color=YEL Shape=CIR -> True,"
+ it is yellow and its size is either small or large.<|eot_id|","
+ it is a circle and its size is either small or medium.<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,0,- Size=L Color=BLU Shape=REC -> False,"
+ it is either a small circle (S CIR) or a small rectangle (S REC).<|eot_id|","
+ it is small (S) and blue (BLU) and is either a circle (CIR) or a rectangle (REC).<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,1,- Size=S Color=BLU Shape=TRI -> True,"
+ it is small (S) and blue (BLU) or small (S) and a rectangle (REC).<|eot_id|","
+ it is small (S) and blue (BLU) and not a rectangle (REC).<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,2,- Size=L Color=YEL Shape=TRI -> False,"
+ it is small (S) and blue (BLU) and its shape is either a circle (CIR) or a triangle (TRI).<|eot_id|","
+ it is small (S) and blue (BLU) and has a shape that is either a circle (CIR) or a triangle (TRI).<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,3,- Size=S Color=BLU Shape=TRI -> True,"
+ it is small (S) and blue (BLU) and not a circle (CIR).<|eot_id|","
+ it is small (S) and has a blue (BLU) shape that is a rectangle (REC).<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,4,- Size=S Color=BLU Shape=REC -> True,"
+ it is a small blue shape.<|eot_id|","
+ it is a small blue circle.<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,5,- Size=S Color=GRN Shape=TRI -> False,"
+ it is either a circle and blue or a rectangle and any color.<|eot_id|","
+ it is small (S) and blue (BLU) regardless of its shape.<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,6,- Size=S Color=BLU Shape=TRI -> True,"
+ it is either a small shape that is a circle or a small shape that is a rectangle.<|eot_id|","
+ it is either a small shape that is a circle or a small shape that is a rectangle.<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,7,- Size=M Color=BLU Shape=REC -> False,"
+ it is either small (S) and blue (BLU) or small (S) and a circle (CIR).<|eot_id|","
+ it is a small size and blue color.<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,8,- Size=S Color=GRN Shape=TRI -> False,"
+ it is either blue and has a shape of circle or rectangle, regardless of its size.<|eot_id|","
+ it is either a circle (CIR) and blue (BLU), or a rectangle (REC) and small (S), or a triangle (TRI) and blue (BLU) and small (S).<|eot_id|
+
+"
+hg24,An object is labeled 'True' if it is S and BLU.,9,- Size=M Color=BLU Shape=TRI -> False,"
+ it is either a small circle or a small rectangle.<|eot_id|","
+ it is a circle and its size is small.<|eot_id|
+
+"

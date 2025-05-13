@@ -187,10 +187,10 @@ def generate_prompt_and_get_token_positions(rule_desc):
     prompt = abbreviation_section + instructions
 
     # Add examples
-    prompt += "Here are some objects and their labels with which you need to learn the rule:\n"
+    prompt += "Here are some objects and their labels:\n"
     for example in examples[:-1]:  # Use first 5 for initial examples
         prompt += f"{example}\n"
-    prompt += "\nHere is the object I want you to label:\n"
+    prompt += "\nLabel the following object:\n"
     test_object_line = examples[-1].split(' -> ')[0]
     prompt += f"{test_object_line}\n"
     prompt += (
@@ -300,7 +300,9 @@ layer_window_size = 12
 layer_step_size = 6
 
 # Proportion of interventions to perform
-intervention_proportion = 0.3 # Adjust this value as needed (e.g., 0.5 for 50%)
+intervention_proportion = 0.1 # Adjust this value as needed (e.g., 0.5 for 50%)
+
+print("starting experiment")
 
 # Run the experiment for each rule
 for rule_idx, (rule_description, rule_name) in enumerate(rules):
@@ -315,6 +317,8 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         generate_prompt_and_get_token_positions(rule_description)
     input_prompt = prompt  # Save the prompt for records
     max_new_tokens = 50  # Increase to capture longer explanations
+
+    print(input_prompt)
 
     # Initialize variables to store runs
     correct_run = None
@@ -362,6 +366,12 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             'output_sequences': output_sequences,
         }
 
+    # Identify the label to noise (opposite of the assigned label)
+    # if assigned_label == 'True':
+    #     label_to_noise = ' True'
+    # else:
+    #     label_to_noise = ' False'
+
     # Find positions of the label tokens in the prompt
     label_token_positions = find_label_token_positions(inputs)
     label_token_positions.pop(0)
@@ -383,7 +393,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
         # Run the model with the noisy input
         activations_noisy = {}
         # Register hooks to capture activations
-        handles = register_hooks(activations_noisy, list(range(num_layers)), components)
+        # handles = register_hooks(activations_noisy, list(range(num_layers)), components)
         # Generate output
         with torch.no_grad():
             output_sequences_noisy = model.generate(
@@ -393,18 +403,21 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                 temperature=0.0,
                 pad_token_id=tokenizer.pad_token_id,
             )
-
         # Remove hooks
-        for handle in handles:
-            handle.remove()
-
+        # for handle in handles:
+        #     handle.remove()
         # Decode the output
+
+        
         output_text_noisy = test_object_line + " ->" + tokenizer.decode(output_sequences_noisy[0], skip_special_tokens=True)
         assigned_label_noisy = label_test_object_in_output(output_text_noisy, test_object_line)
 
         print("\nNo. Noised: " + str(noise_pos_count))
         print("\nNoisy Output Text:\n" + str(output_text_noisy))
         print("\nNoisy Assigned Label:\n" + assigned_label_noisy)
+        print("\nNoisy Activationsl:")
+        print(activations_noisy)
+
 
         # Check if the categorization output has flipped
         if assigned_label_noisy != assigned_label and assigned_label_noisy is not None:
@@ -422,38 +435,28 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
     else:
         print("\nflipped")
         # Save the runs
-        correct_run = base_run
-        incorrect_run = {
-            'text': output_text_noisy,
-            'activations': activations_noisy,
-            'assigned_label': assigned_label_noisy,
-            'rule': extract_rule(output_text_noisy),
-            'tokens': tokenizer.convert_ids_to_tokens(inputs_noisy['inputs_embeds'].argmax(dim=-1)[0]),
-            'position_names': [f'Token_{i}' for i in range(inputs_noisy['inputs_embeds'].shape[1])],
-            'output_sequences': output_sequences_noisy,
-        }
-        # if assigned_label == true_label:
-        #     correct_run = base_run
-        #     incorrect_run = {
-        #         'text': output_text_noisy,
-        #         'activations': activations_noisy,
-        #         'assigned_label': assigned_label_noisy,
-        #         'rule': extract_rule(output_text_noisy),
-        #         'tokens': tokenizer.convert_ids_to_tokens(inputs_noisy['inputs_embeds'].argmax(dim=-1)[0]),
-        #         'position_names': [f'Token_{i}' for i in range(inputs_noisy['inputs_embeds'].shape[1])],
-        #         'output_sequences': output_sequences_noisy,
-        #     }
-        # else:
-        #     incorrect_run = base_run
-        #     correct_run = {
-        #         'text': output_text_noisy,
-        #         'activations': activations_noisy,
-        #         'assigned_label': assigned_label_noisy,
-        #         'rule': extract_rule(output_text_noisy),
-        #         'tokens': tokenizer.convert_ids_to_tokens(inputs_noisy['inputs_embeds'].argmax(dim=-1)[0]),
-        #         'position_names': [f'Token_{i}' for i in range(inputs_noisy['inputs_embeds'].shape[1])],
-        #         'output_sequences': output_sequences_noisy,
-        #     }
+        if assigned_label == true_label:
+            correct_run = base_run
+            incorrect_run = {
+                'text': output_text_noisy,
+                'activations': activations_noisy,
+                'assigned_label': assigned_label_noisy,
+                'rule': extract_rule(output_text_noisy),
+                'tokens': tokenizer.convert_ids_to_tokens(inputs_noisy['inputs_embeds'].argmax(dim=-1)[0]),
+                'position_names': [f'Token_{i}' for i in range(inputs_noisy['inputs_embeds'].shape[1])],
+                'output_sequences': output_sequences_noisy,
+            }
+        else:
+            incorrect_run = base_run
+            correct_run = {
+                'text': output_text_noisy,
+                'activations': activations_noisy,
+                'assigned_label': assigned_label_noisy,
+                'rule': extract_rule(output_text_noisy),
+                'tokens': tokenizer.convert_ids_to_tokens(inputs_noisy['inputs_embeds'].argmax(dim=-1)[0]),
+                'position_names': [f'Token_{i}' for i in range(inputs_noisy['inputs_embeds'].shape[1])],
+                'output_sequences': output_sequences_noisy,
+            }
  
         log_file.write("Correct Run\n")
         log_file.write("Text:" + correct_run['text'] + "\n")
@@ -540,16 +543,14 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                     intervention_config = IntervenableConfig(
                         representations=[
                             RepresentationConfig(
-                                component=component,
                                 layer=layer_num,
+                                component=component,
                             ) for layer_num in range(layer_start, layer_end)
                         ],
                         intervention_types=[VanillaIntervention]*(layer_end-layer_start),
                     )
 
                     print([representation.component.split(".") for representation in intervention_config.representations])
-
-                    print(intervention_config)
 
                     # Initialize the IntervenableModel
                     intervenable_model = IntervenableModel(
@@ -560,43 +561,18 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                     token_indices = list(range(token_start, token_end))
                     unit_locations = {
                         "sources->base": (
-                            [[token_indices]] * len(key_range),  # Positions in source
-                            [[token_indices]] * len(key_range),  # Positions in base
+                            [token_indices] * len(key_range),  # Positions in source
+                            [token_indices] * len(key_range),  # Positions in base
                         )
                     }
-                    unit_locations = {
-                        "sources->base": (
-                            [[[1]]] * (layer_end-layer_start),  # Positions in source
-                            [[[1]]] * (layer_end-layer_start),  # Positions in base
-                        )
-                    }
-                    # unit_locations = {
-                    #     "sources->base": (
-                    #         [1,2] * 3,  # Positions in source
-                    #         [1,2] * 3,  # Positions in base
-                    #     )
-                    # }
-
-                    # unit_locations = {"sources->base": [55]*3}
 
                     # Prepare input_ids
                     base_input_ids = correct_run['output_sequences']
                     sources_input_ids = incorrect_run['output_sequences']
 
                     # Ensure sequence lengths match
-                    # if base_input_ids.shape[1] != sources_input_ids.shape[1]:
-                    #     print("sequence lenghts do not match")
-                    #     # continue  # Skip this intervention
-
-                    base_input_embeds = {'inputs_embeds': model.model.embed_tokens(inputs['input_ids']).to(device)}
-                    sources_input_embeds = final_inputs_noisy
-
-                    if base_input_embeds['inputs_embeds'].shape[0] != sources_input_embeds['inputs_embeds'].shape[0]:
-                        print("sequence lenghts do not match dim 0")
-                        # continue  # Skip this intervention
-
-                    if base_input_embeds['inputs_embeds'].shape[1] != sources_input_embeds['inputs_embeds'].shape[1]:
-                        print("sequence lenghts do not match dim 1")
+                    if base_input_ids.shape[1] != sources_input_ids.shape[1]:
+                        print("sequence lenghts do not match")
                         # continue  # Skip this intervention
 
                     # Prepare activations
@@ -604,36 +580,34 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                         'base': {key: correct_run['activations'][key] for key in key_range},
                         'sources': {key: incorrect_run['activations'][key] for key in key_range},
                     }
-                    print(incorrect_run['activations'][key])
-                    activations = {"layer_"+str(key[1])+"_comp_"+key[0]+"_unit_pos_nunit_1#0": incorrect_run['activations'][key][0] for key in key_range}
 
-                    print(base_input_embeds['inputs_embeds'].shape)
-                    print(sources_input_embeds['inputs_embeds'].shape)
-                    print(activations['layer_0_comp_block_output_unit_pos_nunit_1#0'].shape)
+                    # handles = register_hooks(activations_base, list(range(num_layers)), components)
 
                     # Run the model with intervention
-                    # with torch.no_grad():
                     with torch.no_grad():
                         _, intervened_outputs = intervenable_model.generate(
-                            # base=inputs,
-                            # sources=inputs,
-                            base=base_input_embeds,
-                            sources=[sources_input_embeds]*(layer_end-layer_start),
-                            # source_representations=activations,
-                            unit_locations = unit_locations,
-                            max_length=350,
+                            base=inputs['input_ids'],
+                            source_representations=activations_noisy,
+                            # base={'inputs_embeds': model.model.embed_tokens(inputs['input_ids']).to(device)},
+                            # sources={'inputs_embeds': final_inputs_noisy['inputs_embeds'].to(device)},
+                            # activations=activations,
+                            unit_locations=unit_locations,
                             # max_length=base_input_ids.shape[1],
-                            # do_sample=False,
-                            # temperature=0.0,
-                            # pad_token_id=tokenizer.pad_token_id,
+                            # max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            temperature=0.0,
+                            pad_token_id=tokenizer.pad_token_id,
                         )
+                    
+                    # # Remove hooks
+                    # for handle in handles:
+                    #     handle.remove()
 
                     # Decode the intervened output
-                    # intervened_text = tokenizer.decode(
-                    #     intervened_outputs.sequences[0],
-                    #     skip_special_tokens=True
-                    # )
-                    intervened_text = tokenizer.decode(intervened_outputs[0], skip_special_tokens=False)
+                    intervened_text = tokenizer.decode(
+                        intervened_outputs.sequences[0],
+                        skip_special_tokens=True
+                    )
 
                     print("Intervened Text:")
                     print(intervened_text)
@@ -642,8 +616,6 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
 
                     print("Intervened Ouput Text:")
                     print(intervened_text_output)
-
-                    quit()
 
                     # Extract assigned label and rule
                     assigned_label_intervened = label_test_object_in_output(

@@ -1,0 +1,116 @@
+
+--- Processing hg06: An object is labeled 'True' if it is BLU or a CIR. ---
+
+Base Total Text: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+Cutting Knowledge Date: December 2023
+Today Date: 26 Jul 2024
+
+We will abbreviate sizes as: S=small, M=medium, L=large; colors as: BLU=blue, GRN=green, YEL=yellow; shapes as: CIR=circle, TRI=triangle, REC=rectangle.
+
+Learn the secret rule to label the objects correctly. If an object follows the rule, it should be labeled 'True'. Otherwise, it should be labeled 'False'. Always follow the arrow '->' with an object's label.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Here are some objects and their labels with which you need to learn the rule:
+Provide the label for the following object:
+- Size=S Color=GRN Shape=REC<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=GRN Shape=REC -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=BLU Shape=CIR<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=BLU Shape=CIR -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=BLU Shape=CIR<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=BLU Shape=CIR -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=BLU Shape=CIR<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=BLU Shape=CIR -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=YEL Shape=TRI<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=YEL Shape=TRI -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=YEL Shape=TRI<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=YEL Shape=TRI -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=YEL Shape=TRI<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=YEL Shape=TRI -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=L Color=BLU Shape=REC<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=BLU Shape=REC -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=BLU Shape=REC<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=BLU Shape=REC -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=GRN Shape=CIR<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=GRN Shape=CIR -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=BLU Shape=TRI<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=BLU Shape=TRI -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=GRN Shape=REC<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=GRN Shape=REC -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=BLU Shape=TRI<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=BLU Shape=TRI -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=BLU Shape=REC<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=BLU Shape=REC -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=YEL Shape=REC<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=YEL Shape=REC -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+First, provide the label for the following object:
+- Size=M Color=GRN Shape=TRI
+then also explain the rule you've inferred starting with "Based on your examples, I've learned that an object should be labeled 'True' if and only if"<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=GRN Shape=TRI -> False
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if it is a circle and its size is medium, regardless of its color.<|eot_id|>
+True Label:
+False
+
+
+Base Run
+Text:<|begin_of_text|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=GRN Shape=TRI -> False
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if it is a circle and its size is medium, regardless of its color.<|eot_id|>
+Assigned Label:False
+Rule: it is a circle and its size is medium, regardless of its color.<|eot_id|
+
+Noised Run
+Text:- Size=M Color=GRN Shape=TRI -><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=GRN Shape=TRI -> True
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if it is a rectangle (REC) and its size is large (L).<|eot_id|>
+Assigned Label:True
+Rule: it is a rectangle (REC) and its size is large (L).<|eot_id|

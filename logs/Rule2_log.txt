@@ -1,3 +1,0 @@
-
---- Processing Rule2: An object is labeled 'True' if it is not a CIR. ---
-
