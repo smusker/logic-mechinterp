@@ -43,9 +43,8 @@ if tokenizer.pad_token is None:               # add pad token if missing
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.bfloat16,               # bf16 fits on 24-GB GPU
-    device_map="auto",
-)
+    torch_dtype=torch.float16,               # bf16 fits on 24-GB GPU
+).to(device)
 model.eval()
 
 print(f"Model hidden size: {model.config.hidden_size}")
@@ -65,7 +64,7 @@ test_B  = build_loader(tokenizer, cf_pair_model_B,  1000, batch_size=16, shuffle
 #  Build IntervenableModel  (layer 12, penultimate token)
 # ---------------------------------------------------------------------
 LAYER_TO_PROBE   = 12
-TOKEN_TO_PROBE   = -2            # constant across fixed-length prompt
+TOKEN_TO_PROBE   = 68 - 2            # constant across fixed-length prompt. found 68 prompt length from test.py
 
 def make_intervenable():
     cfg_intv = IntervenableConfig(
