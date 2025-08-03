@@ -60,16 +60,16 @@ os.makedirs('intervention_records', exist_ok=True)
 
 # Abbreviations for sizes, colors, and shapes
 sizes = ['S', 'M', 'L']  # Small, Medium, Large
-colors = ['BLU', 'GRN', 'YEL']  # Blue, Green, Yellow
-shapes = ['CIR', 'TRI', 'REC']  # Circle, Triangle, Rectangle
+colors = ['bl', 'gre', 'ye']  # Blue, Green, Yellow.
+shapes = ['cir', 'tri', 'rec']  # Circle, Triangle, Rectangle
 
 # Define the rules and their labels
 rules = [
-    # ("An object is labeled 'True' if it is not a CIR.", "hg05"),
-    ("An object is labeled 'True' if it is BLU or a CIR.", "hg06"),
-    ("An object is labeled 'True' if it is a CIR or a TRI.", "hg07"),
-    ("An object is labeled 'True' if it is a CIR and not BLU.", "hg10"),
-    ("An object is labeled 'True' if it is S and BLU.", "hg24"),
+    # ("An object is labeled 'True' if it is not a cir.", "hg05"),
+    ("An object is labeled 'True' if it is bl or a cir.", "hg06"),
+    ("An object is labeled 'True' if it is a cir or a tri.", "hg07"),
+    ("An object is labeled 'True' if it is a cir and not bl.", "hg10"),
+    ("An object is labeled 'True' if it is S and bl.", "hg24"),
 ]
 
 def label_object(description, rule_desc):
@@ -79,24 +79,24 @@ def label_object(description, rule_desc):
     color = attributes.get('Color')
     shape = attributes.get('Shape')
 
-    if "not a CIR" in rule_desc:
-        is_cir = 'CIR' == shape
+    if "not a cir" in rule_desc:
+        is_cir = 'cir' == shape
         return 'False' if is_cir else 'True'
-    elif "BLU or a CIR" in rule_desc:
-        is_blu = 'BLU' == color
-        is_cir = 'CIR' == shape
+    elif "bl or a cir" in rule_desc:
+        is_blu = 'bl' == color
+        is_cir = 'cir' == shape
         return 'True' if is_blu or is_cir else 'False'
-    elif "a CIR or a TRI" in rule_desc:
-        is_cir = 'CIR' == shape
-        is_tri = 'TRI' == shape
+    elif "a cir or a tri" in rule_desc:
+        is_cir = 'cir' == shape
+        is_tri = 'tri' == shape
         return 'True' if is_cir or is_tri else 'False'
-    elif "CIR and not BLU" in rule_desc:
-        is_cir = 'CIR' == shape
-        is_blu = 'BLU' == color
+    elif "cir and not bl" in rule_desc:
+        is_cir = 'cir' == shape
+        is_blu = 'bl' == color
         return 'True' if is_cir and not is_blu else 'False'
-    elif "S and BLU" in rule_desc:
+    elif "S and bl" in rule_desc:
         is_s = 'S' == size
-        is_blu = 'BLU' == color
+        is_blu = 'bl' == color
         return 'True' if is_s and is_blu else 'False'
     else:
         return 'False'  # Default fallback
@@ -186,8 +186,8 @@ def generate_prompt_and_get_token_positions(rule_desc):
     # Build the prompt with abbreviations up front
     abbreviation_section = (
         "We will abbreviate sizes as: S=small, M=medium, L=large; "
-        "colors as: BLU=blue, GRN=green, YEL=yellow; "
-        "shapes as: CIR=circle, TRI=triangle, REC=rectangle.\n\n"
+        "colors as: bl=blue, gre=green, ye=yellow; "
+        "shapes as: cir=circle, tri=triangle, rec=rectangle.\n\n"
     )
     instructions = (
         "Learn the secret rule to label the objects correctly. "
