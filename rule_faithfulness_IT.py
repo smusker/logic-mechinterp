@@ -695,6 +695,28 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
             token_window_labels = [
                 f"{start}-{end}" for start, end in token_windows
             ]
+
+
+            # --- NEW: categorization-flip heatmap ------------------------------------
+            plt.figure(figsize=(12, 8))
+            plt.imshow(categorization_flip_counts[comp_idx],
+                    aspect='auto', cmap='inferno', interpolation='nearest')
+            plt.colorbar(label='Count of Categorization Flips')
+            plt.xlabel('Token Windows')
+            plt.ylabel('Layer Windows')
+            plt.title(f'{rule_name}: Categorization Flips\n'
+                    f'{component.capitalize()} Component')
+            plt.xticks(ticks=range(len(token_window_labels)),
+                    labels=token_window_labels, rotation=90, fontsize=6)
+            plt.yticks(ticks=range(len(layer_window_labels)),
+                    labels=layer_window_labels, fontsize=6)
+            plt.tight_layout()
+            filename = f"heatmaps/{rule_name}_{component}_categorization_flip.png"
+            plt.savefig(filename)
+            plt.close()
+            log_file.write(f"Categorization-flip heatmap saved as {filename}\n")
+            # -------------------------------------------------------------------------
+
         
             # Plot the results for each component
             plt.figure(figsize=(12, 8))
