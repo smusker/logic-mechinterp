@@ -36,8 +36,8 @@ load_dotenv()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load LLaMA 3.1 8B using Auto classes
-os.environ['TRANSFORMERS_CACHE'] = '/oscar/scratch/dkang33/model_cache'
-model_id = "meta-llama/Llama-3.3-70B-Instruct"
+os.environ['TRANSFORMERS_CACHE'] = '/oscar/scratch/smusker/model_cache' #'/oscar/scratch/dkang33/model_cache'
+model_id = "meta-llama/Meta-Llama-3-8B-Instruct" #70b didn't execute within 8 hours on 3090 so switching to 8b #"meta-llama/Llama-3.3-70B-Instruct"
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
@@ -65,10 +65,10 @@ shapes = ['cir', 'tri', 'rec']  # Circle, Triangle, Rectangle
 
 # Define the rules and their labels
 rules = [
-    # ("An object is labeled 'True' if it is not a cir.", "hg05"),
-    ("An object is labeled 'True' if it is bl or a cir.", "hg06"),
-    ("An object is labeled 'True' if it is a cir or a tri.", "hg07"),
-    ("An object is labeled 'True' if it is a cir and not bl.", "hg10"),
+    #("An object is labeled 'True' if it is not a cir.", "hg05"),
+    #("An object is labeled 'True' if it is bl or a cir.", "hg06"),
+    #("An object is labeled 'True' if it is a cir or a tri.", "hg07"),
+    #("An object is labeled 'True' if it is a cir and not bl.", "hg10"),
     ("An object is labeled 'True' if it is S and bl.", "hg24"),
 ]
 
@@ -143,36 +143,45 @@ def extract_rule(output_text):
 
 def label_test_object_in_output(output_text, test_object_line):
     """
-    Extracts the label assigned to the test object in the model's output.
+    Extracts the label assigned to the test object in the model's output. Modified to make it more robust by falling back to looking after -> in case of a miss. 
     """
     try:
-        # Find the line that contains the test object
         lines = output_text.split('\n')
         for i, line in enumerate(lines):
+            # ---------- original checks ----------
             if test_object_line.strip() in line:
-                # The label is expected to be in the same line or next line
                 if '->' in line:
                     parts = line.split('->')
                     if len(parts) == 2:
                         assigned_label = parts[1].strip().split()[0]
                         if assigned_label in ['True', 'False']:
                             return assigned_label
-                else:
-                    # Check the next line
-                    if i + 1 < len(lines):
-                        next_line = lines[i + 1].strip()
-                        if next_line in ['True', 'False']:
-                            return next_line
-            # In case the model rephrases the test object line
+                elif i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if next_line in ['True', 'False']:
+                        return next_line
             elif 'Shape=' in line and 'Color=' in line and 'Size=' in line:
                 parts = line.split('->')
                 if len(parts) == 2:
                     assigned_label = parts[1].strip().split()[0]
                     if assigned_label in ['True', 'False']:
                         return assigned_label
+        # ---------- FALLBACK ----------
+        # We didn't find the test object line.  Look from the *bottom* of the
+        # assistant's reply upwards for the first '-> label' pattern.
+        for line in reversed(lines):                 # bottom-to-top scan
+            if '->' in line:
+                after_arrow = line.rsplit('->', 1)[-1].strip()
+                candidate = after_arrow.split()[0]
+                if candidate in ['True', 'False']:
+                    return candidate
+                # We hit an arrow but the token isn't a valid label; give up.
+                break
+        # ------------------------------------
         return None  # Label not found
     except Exception:
         return None
+
 
 def generate_prompt_and_get_token_positions(rule_desc):
     # Define the label pattern
@@ -568,7 +577,7 @@ for rule_idx, (rule_description, rule_name) in enumerate(rules):
                         print("sequence lenghts do not match dim 1")
                         # continue  # Skip this intervention
 
-                    restored_output_text = ""
+                    restored_output_text = prompt #fixing all zero heatmaps #restored_output_text = ""
                     for i in range(max_new_tokens):
                         # Run the model with intervention
                         with torch.no_grad():

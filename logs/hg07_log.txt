@@ -1,0 +1,123 @@
+
+--- Processing hg07: An object is labeled 'True' if it is a cir or a tri. ---
+
+Base Total Text: <|begin_of_text|><|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+We will abbreviate sizes as: S=small, M=medium, L=large; colors as: bl=blue, gre=green, ye=yellow; shapes as: cir=circle, tri=triangle, rec=rectangle.
+
+Learn the secret rule to label the objects correctly. If an object follows the rule, it should be labeled 'True'. Otherwise, it should be labeled 'False'. Always follow the arrow '->' with an object's label.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Here are some objects and their labels with which you need to learn the rule:
+Provide the label for the following object:
+- Size=S Color=gre Shape=rec<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=gre Shape=rec -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=bl Shape=cir<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=bl Shape=cir -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=L Color=gre Shape=tri<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=gre Shape=tri -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=bl Shape=cir<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=bl Shape=cir -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=L Color=bl Shape=rec<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=bl Shape=rec -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=bl Shape=rec<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=bl Shape=rec -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=gre Shape=rec<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=gre Shape=rec -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=bl Shape=tri<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=bl Shape=tri -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=L Color=bl Shape=cir<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=bl Shape=cir -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=M Color=gre Shape=tri<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=gre Shape=tri -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=ye Shape=tri<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=ye Shape=tri -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=S Color=bl Shape=rec<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=S Color=bl Shape=rec -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=L Color=gre Shape=cir<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=gre Shape=cir -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=L Color=gre Shape=tri<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=gre Shape=tri -> True<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Provide the label for the following object:
+- Size=L Color=ye Shape=rec<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=L Color=ye Shape=rec -> False<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+First, provide the label for the following object:
+- Size=M Color=ye Shape=rec
+then also explain the rule you've inferred starting with "Based on your examples, I've learned that an object should be labeled 'True' if and only if"<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=ye Shape=rec -> False
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if the object's size is Medium (M) and its shape is a Circle (cir).<|eot_id|>
+True Label:
+False
+
+
+Base Run
+Text:<|begin_of_text|><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=ye Shape=rec -> False
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if the object's size is Medium (M) and its shape is a Circle (cir).<|eot_id|>
+Assigned Label:False
+Rule: the object's size is Medium (M) and its shape is a Circle (cir).<|eot_id|
+
+Noised Run
+Text:- Size=M Color=ye Shape=rec -><|start_header_id|>assistant<|end_header_id|>
+
+- Size=M Color=ye Shape=rec -> True
+
+Based on your examples, I've learned that an object should be labeled 'True' if and only if the object's size is not small (S) and the object's color is not blue (bl).<|eot_id|>
+Assigned Label:True
+Rule: the object's size is not small (S) and the object's color is not blue (bl).<|eot_id|
+Categorization-flip heatmap saved as heatmaps/hg07_block_output_categorization_flip.png
+Co-flip heatmap saved as heatmaps/hg07_block_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg07_block_output_consistency.png
+Categorization-flip heatmap saved as heatmaps/hg07_mlp_output_categorization_flip.png
+Co-flip heatmap saved as heatmaps/hg07_mlp_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg07_mlp_output_consistency.png
+Categorization-flip heatmap saved as heatmaps/hg07_attention_output_categorization_flip.png
+Co-flip heatmap saved as heatmaps/hg07_attention_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg07_attention_output_consistency.png
+No categorization flips occurred for hg07.
