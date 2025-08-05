@@ -65,11 +65,11 @@ shapes = ['cir', 'tri', 'rec']  # Circle, Triangle, Rectangle
 
 # Define the rules and their labels
 rules = [
-    #("An object is labeled 'True' if it is not a cir.", "hg05"),
+    ("An object is labeled 'True' if it is not a cir.", "hg05"),
     #("An object is labeled 'True' if it is bl or a cir.", "hg06"),
     #("An object is labeled 'True' if it is a cir or a tri.", "hg07"),
     #("An object is labeled 'True' if it is a cir and not bl.", "hg10"),
-    ("An object is labeled 'True' if it is S and bl.", "hg24"),
+    #("An object is labeled 'True' if it is S and bl.", "hg24"),
 ]
 
 def label_object(description, rule_desc):

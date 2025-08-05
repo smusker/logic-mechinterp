@@ -108,9 +108,9 @@ Text:- Size=M Color=ye Shape=rec -><|start_header_id|>assistant<|end_header_id|>
 
 - Size=M Color=ye Shape=rec -> True
 
-Based on your examples, I've learned that an object should be labeled 'True' if and only if the object's size is not small (S) and the object's color is not blue (bl).<|eot_id|>
+Based on your examples, I've learned that an object should be labeled 'True' if and only if the size is not 'S' and the color is not 'bl' and the shape is not 'tri'.<|eot_id|>
 Assigned Label:True
-Rule: the object's size is not small (S) and the object's color is not blue (bl).<|eot_id|
+Rule: the size is not 'S' and the color is not 'bl' and the shape is not 'tri'.<|eot_id|
 Categorization-flip heatmap saved as heatmaps/hg07_block_output_categorization_flip.png
 Co-flip heatmap saved as heatmaps/hg07_block_output_co_flip.png
 Consistency heatmap saved as heatmaps/hg07_block_output_consistency.png

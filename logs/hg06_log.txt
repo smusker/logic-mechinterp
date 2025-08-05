@@ -108,6 +108,16 @@ Text:- Size=M Color=gre Shape=tri -><|start_header_id|>assistant<|end_header_id|
 
 - Size=M Color=gre Shape=tri -> True
 
-Based on your examples, I've learned that an object should be labeled 'True' if and only if its size is 'S' and its shape is'rec', or its size is 'M' and its shape is 'cir', or its size is 'L' and its shape is'rec'.<|eot_id|>
+Based on your examples, I've learned that an object should be labeled 'True' if and only if the size is not 'S' (small).<|eot_id|>
 Assigned Label:True
-Rule: its size is 'S' and its shape is'rec', or its size is 'M' and its shape is 'cir', or its size is 'L' and its shape is'rec'.<|eot_id|
+Rule: the size is not 'S' (small).<|eot_id|
+Categorization-flip heatmap saved as heatmaps/hg06_block_output_categorization_flip.png
+Co-flip heatmap saved as heatmaps/hg06_block_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg06_block_output_consistency.png
+Categorization-flip heatmap saved as heatmaps/hg06_mlp_output_categorization_flip.png
+Co-flip heatmap saved as heatmaps/hg06_mlp_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg06_mlp_output_consistency.png
+Categorization-flip heatmap saved as heatmaps/hg06_attention_output_categorization_flip.png
+Co-flip heatmap saved as heatmaps/hg06_attention_output_co_flip.png
+Consistency heatmap saved as heatmaps/hg06_attention_output_consistency.png
+No categorization flips occurred for hg06.
