@@ -5,6 +5,9 @@ __pycache__/
 
 # Virtual environment directory
 logic_env/
+logic_env_311/
+venv/
+.env/
 
 # System files
 .DS_Store

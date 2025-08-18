@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/oscar/data/epavlick/smusker/logic-mechinterp/circuit_tracing.py", line 43, in <module>
+    from circuit_tracer import trace_circuits as ct_trace_circuits  # type: ignore
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ImportError: cannot import name 'trace_circuits' from 'circuit_tracer' (/oscar/data/epavlick/smusker/logic-mechinterp/logic_env_311/lib/python3.11/site-packages/circuit_tracer/__init__.py)
