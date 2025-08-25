@@ -7,6 +7,7 @@ Main experiment runner for causal dependence of final answers on stated reasonin
     • "step": single-digit perturbation inside reasoning steps (original behavior)
     • "answer": rewrite ALL mentions of the final answer number in the reasoning (no substep edits)
 - Supports optionally stripping answers from reasoning before injection (baseline & intervention)
+- Purging is model-first; post-purge cleanup removes dangling artifacts like '= .' or 'So answer is .'
 
 Usage:
 - Set OPENROUTER_API_KEY env var or enter interactively when prompted.
@@ -14,11 +15,9 @@ Usage:
 """
 
 import os
-import re
-import json
 import random
 import pandas as pd
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Tuple, Optional, List
 from openai import OpenAI
 
 from gpt_oss_experiment_utilities import (
@@ -48,7 +47,7 @@ OUT_CSV = "perturbation_results.csv"
 # FLAGS
 REJECT_BAD_REASONING = True
 STRIP_ANSWERS_FROM_REASONING = True  # <— applies to both baseline & intervention
-ALLOW_STRIP_FALLBACK = True          # enable robust heuristic if model misses substrings
+ALLOW_STRIP_FALLBACK = True          # keep minimal heuristic if model misses (model-first otherwise)
 
 # EDIT TARGET: "step" or "answer"
 #   "step"   -> single-digit perturbation to a reasoning step (original experiment)
@@ -133,7 +132,7 @@ No extra fields.
 # =========================
 # MODEL CALLS
 # =========================
-def call_reasoner(client: OpenAI, question: str, think_injection: Optional[str] = None) -> Tuple[str, Optional[str]]:
+def call_reasoner(client: OpenAI, question: str, think_injection: Optional[str] = None):
     """
     Call the reasoning model. If think_injection is provided, it is appended as a prior assistant message.
     Returns: (final_answer_text, reasoning_text_if_available)
@@ -167,7 +166,7 @@ def intervention_edit_think_single_method(
     question: str,
     original_think_no_answer: str,
     true_sum: int,
-) -> Optional[Tuple[str, int, str]]:
+):
     """
     "step" edit target:
     Ask the editor to produce ONE single-digit perturbation, keeping internal consistency.
@@ -225,26 +224,22 @@ def build_answer_mentions_altered_reasoning(
     client: OpenAI,
     reasoning_with_answers: str,
     original_answer_int: Optional[int],
-) -> Optional[Tuple[str, int, str]]:
+):
     """
     "answer" edit target:
     Choose a nearby altered integer (±1..±9 away from original_answer_int if available),
     and replace ALL occurrences of the original answer number token inside the reasoning.
-    Do NOT change any other parts (no substep edits).
+    Do NOT change any other parts (no substep correction).
     Returns (altered_reasoning_with_answers, altered_answer_int, rationale) or None.
     """
-    # If we don't know the number from the final answer, try to infer from the reasoning text
     if original_answer_int is None:
-        # last number heuristic from full reasoning
         original_answer_int = first_int(reasoning_with_answers)
-
     if original_answer_int is None:
         return None
 
     altered_int = choose_altered_answer_nearby(original_answer_int)
     altered_text = replace_all_answer_numbers(reasoning_with_answers, original_answer_int, altered_int)
     if altered_text.strip() == reasoning_with_answers.strip():
-        # Nothing changed (e.g., answer number not present as token); treat as failure
         return None
 
     rationale = f"Replaced all occurrences of answer {original_answer_int} with {altered_int}."
@@ -257,7 +252,7 @@ def sample_accepted_reasoning_for_pair(
     client: OpenAI,
     question: str,
     max_resamples: int = MAX_REASONING_RESAMPLES
-) -> Tuple[str, str, str, int, bool, Optional[int]]:
+):
     """
     Sample OSS-20B reasoning until accepted (no rewriting). Returns:
     (answer_original_text, reasoning_original_with_answers, reasoning_stripped, resamples_used, accepted, answer_int)
@@ -270,7 +265,6 @@ def sample_accepted_reasoning_for_pair(
         reasoning = reasoning or ""
         ans_int = first_int(ans_text)
 
-        # robust multi-mention stripping if enabled
         stripped = strip_answers_model_based_multi(
             client,
             reasoning,
@@ -292,8 +286,8 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
       1) Obtain ONE accepted OSS-20B reasoning (answer-stripped depending on flag) via resampling if needed.
       2) BASELINE: Inject that exact accepted reasoning (or unstripped, per flag) and ask again.
       3) INTERVENTION:
-           - EDIT_TARGET == "step": perturb a single reasoning digit (no answers present in the injected think).
-           - EDIT_TARGET == "answer": replace ALL mentions of the answer number in the reasoning; optionally strip after.
+           - EDIT_TARGET == "step": perturb a single reasoning digit (purged chain).
+           - EDIT_TARGET == "answer": replace ALL mentions of the answer number (then optionally purge).
     """
     all_records = []
     total_rejections = 0
@@ -310,7 +304,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
         if not accepted:
             total_rejections += 1
 
-        # Choose which reasoning to inject for baseline (strip or not per flag)
+        # Baseline
         reasoning_used_for_baseline = reasoning_stripped if STRIP_ANSWERS_FROM_REASONING else reasoning_original
         think_block_base = f"<think>\n{reasoning_used_for_baseline}\n</think>"
 
@@ -328,7 +322,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
 
             "reasoning_original": reasoning_original,
             "reasoning_stripped": reasoning_stripped,
-            "reasoning_revised": "",  # no rewriting by other model
+            "reasoning_revised": "",
             "reasoning_used_for_injection": reasoning_used_for_baseline,
 
             "answer_original": answer_original_text,
@@ -350,7 +344,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
 
         # 2) INTERVENTION
         if EDIT_TARGET == "step":
-            # Work from the no-answer chain (by design)
+            # Always edit the purged chain to ensure edits target steps, not answers
             src_for_step = reasoning_stripped
             altered = None
             implied_altered = None
@@ -398,14 +392,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 })
                 continue
 
-            # Inject altered thinking (no answer lines)
-            altered_to_inject = altered
-            if STRIP_ANSWERS_FROM_REASONING:
-                # should already be answer-free, but keep consistent
-                altered_to_inject = strip_answers_model_based_multi(
-                    client, altered_to_inject, allow_fallback=ALLOW_STRIP_FALLBACK, known_answer=None
-                )
-
+            altered_to_inject = altered  # already answer-free source; keep consistent
             think_block_alt = f"<think>\n{altered_to_inject}\n</think>"
             inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=think_block_alt)
             inj_pred_alt = first_int(inj_answer_text_alt)
@@ -447,8 +434,8 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             })
 
         elif EDIT_TARGET == "answer":
-            # Build altered reasoning by changing ALL mentions of the answer number (no substep edits)
-            src_for_answer_edit = reasoning_original  # start from WITH answers
+            # Edit answer mentions first (needs answers present), then optionally purge
+            src_for_answer_edit = reasoning_original
             built = build_answer_mentions_altered_reasoning(
                 client, src_for_answer_edit, answer_int
             )
@@ -544,7 +531,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
 # =========================
 # AGGREGATION / REPORTING
 # =========================
-def wilson_ci(successes: int, n: int) -> Tuple[float, float]:
+def wilson_ci(successes: int, n: int):
     if n == 0:
         return (0.0, 0.0)
     from math import sqrt
@@ -603,7 +590,7 @@ def main():
     N = min(NUM_BASELINE, NUM_INTERVENTION)
     pairs = make_fixed_pairs(N)
 
-    print("Running trials with tandem acceptance, robust multi-mention stripping, and dual edit modes...")
+    print("Running trials with tandem acceptance, robust multi-mention stripping (model-first), and dual edit modes...")
     all_records, total_rejections, total_intervention_failures = run_trials(client, pairs)
     summarize_and_save(all_records, total_rejections, total_intervention_failures)
 
