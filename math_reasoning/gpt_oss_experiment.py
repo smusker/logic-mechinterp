@@ -149,7 +149,7 @@ def call_reasoner(client: OpenAI, question: str, think_injection: Optional[str] 
         {"role": "user", "content": question},
     ]
     if think_injection:
-        messages.append({"role": "assistant", "content": think_injection})
+        messages.append({"role": "assistant", "reasoning": think_injection}) #changed: used to append think injection as "content" not "reasoning"
 
     resp = client.chat.completions.create(
         model=REASONING_MODEL,
@@ -319,7 +319,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
         # We inject the reasoning (stripped or not per flag), but we ALWAYS grade using the model's
         # returned answer_after_injection, which we never purge or modify.
         reasoning_used_for_baseline = reasoning_stripped if STRIP_ANSWERS_FROM_REASONING else reasoning_original
-        think_block_base = f"<think>\n{reasoning_used_for_baseline}\n</think>"
+        think_block_base = reasoning_used_for_baseline#f"<think>\n{reasoning_used_for_baseline}\n</think>" #changed - <think> tags may not be necessary
 
         inj_answer_text_base, _ = call_reasoner(client, question, think_injection=think_block_base)
         # NOTE: inj_answer_text_base is NEVER PURGED. We parse int for grading only.
@@ -408,7 +408,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 continue
 
             altered_to_inject = altered  # already answer-free source; keep consistent
-            think_block_alt = f"<think>\n{altered_to_inject}\n</think>"
+            think_block_alt = altered_to_inject #f"<think>\n{altered_to_inject}\n</think>" #changed - <think> tags may not be necessary
 
             inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=think_block_alt)
             # NEVER purge/modify the model's answer:
@@ -500,7 +500,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 if STRIP_ANSWERS_FROM_REASONING else altered_reasoning_with_answers
             )
 
-            think_block_alt = f"<think>\n{altered_to_inject}\n</think>"
+            think_block_alt = altered_to_inject #f"<think>\n{altered_to_inject}\n</think>" #changed - <think> tags may not be necessary
 
             inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=think_block_alt)
             inj_pred_alt = first_int(inj_answer_text_alt)  # NEVER PURGED
