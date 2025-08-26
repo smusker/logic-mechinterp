@@ -3,11 +3,13 @@
 Utilities for parsing numbers, JSON, and robustly removing/altering answer mentions
 from reasoning chains. Imported by gpt_oss_experiment.py.
 
-Purging is MODEL-FIRST:
+Purging is MODEL-FIRST and applies ONLY to reasoning text:
   1) Ask a model to list ALL answer substrings verbatim; remove every occurrence.
   2) Lightweight cleanup removes dangling artifacts (e.g., '= .', 'So answer is .').
   3) Minimal fallback (optional) to drop explicit answer-clauses and standalone answer tokens,
      only when the model misses obvious mentions.
+
+We NEVER call these helpers on the model's final answer text.
 """
 
 import re
@@ -55,7 +57,7 @@ def replace_last_occurrence(text: str, old: str, new: str) -> str:
         return text
     return text[:idx] + new + text[idx + len(old):]
 
-# ---------- MODEL-FIRST multi-mention answer stripping ----------
+# ---------- MODEL-FIRST multi-mention answer stripping (REASONING-ONLY) ----------
 
 def extract_answer_substrings_multi(client: OpenAI, reasoning_trace: str) -> List[str]:
     """
@@ -121,21 +123,16 @@ def _cleanup_dangling_artifacts(text: str) -> str:
         has_connector = bool(connector_pat.search(ln))
         has_keyword = bool(keyword_pat.search(ln))
 
-        # Normalize trivial punctuation remnants like '= .' or '= .' at end
         trimmed = ln.strip()
-        # Drop lines that end with '=' or ':' or variants with only punctuation trailing
+
         if not has_digit:
             if has_keyword:
-                # A keyword line with no digits is likely a dangling "So answer is ."
                 continue
             if has_connector:
-                # If there's a connector but no digits anywhere, it's likely '= .' or similar
-                # Check if the part after the last connector has only punctuation/space
                 last_pos = max(trimmed.rfind('='), trimmed.rfind(':'))
                 after = trimmed[last_pos + 1:].strip() if last_pos != -1 else ""
                 if after == "" or re.fullmatch(r"[^\w\d]+", after or ""):
                     continue
-            # If no digits and the line is only punctuation/quotes/emphasis → drop
             if re.fullmatch(r"[^\w\d]+", trimmed or ""):
                 continue
 
@@ -208,7 +205,7 @@ def strip_answers_model_based_multi(
 
       MODEL-FIRST:
         1) Ask model for ALL exact answer substrings and drop every occurrence (global).
-        2) Clean up dangling artifacts structurally (no model-phrase dependence).
+        2) Clean up dangling artifacts structurally (handles '= .' & similar).
 
       MINIMAL FALLBACK (optional):
         3) Remove explicit 'answer/result is ...' clauses anywhere.
@@ -216,6 +213,9 @@ def strip_answers_model_based_multi(
            in non-step lines.
 
     Returns cleaned reasoning text; if we overstrip to empty, returns original.
+
+    IMPORTANT: This function is for REASONING TEXT ONLY.
+               Never call it on the model's final answer text.
     """
     if not reasoning_trace:
         return reasoning_trace
@@ -248,7 +248,7 @@ def strip_answers_model_based_multi(
 
     return text.strip() if text.strip() else reasoning_trace
 
-# ---------- "Answer mentions" alteration helpers ----------
+# ---------- "Answer mentions" alteration helpers (for reasoning text) ----------
 
 def choose_altered_answer_nearby(original: int) -> int:
     """
@@ -271,6 +271,8 @@ def replace_all_answer_numbers(s: str, original_answer: int, altered_answer: int
     """
     Replace ALL whole-token occurrences of original_answer with altered_answer,
     leaving all other parts of the reasoning untouched (no substep correction).
+
+    IMPORTANT: This is intended for REASONING TEXT ONLY (not the final answer field).
     """
     out = s
     pats = _answer_token_patterns(original_answer)

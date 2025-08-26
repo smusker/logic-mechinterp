@@ -2,12 +2,13 @@
 """
 Main experiment runner for causal dependence of final answers on stated reasoning.
 
-- Shorter: moves reasoning/answer reprocessing helpers to gpt_oss_experiment_utilities.py
-- Supports two edit targets:
-    • "step": single-digit perturbation inside reasoning steps (original behavior)
-    • "answer": rewrite ALL mentions of the final answer number in the reasoning (no substep edits)
-- Supports optionally stripping answers from reasoning before injection (baseline & intervention)
-- Purging is model-first; post-purge cleanup removes dangling artifacts like '= .' or 'So answer is .'
+Key guarantees in this version:
+- We ONLY purge answers from the *reasoning* text (never from the model's answer text).
+- answer_original and answer_after_injection are always the raw model outputs, unmodified.
+- Two edit targets:
+    • "step": single-digit perturbation inside reasoning steps (uses purged reasoning to avoid editing answer tokens)
+    • "answer": replace ALL mentions of the answer number inside reasoning (no substep edits), then optionally purge
+- Optionally strip answers from reasoning before injection (baseline & intervention), but never from answers.
 
 Usage:
 - Set OPENROUTER_API_KEY env var or enter interactively when prompted.
@@ -46,13 +47,17 @@ OUT_CSV = "perturbation_results.csv"
 
 # FLAGS
 REJECT_BAD_REASONING = True
-STRIP_ANSWERS_FROM_REASONING = True  # <— applies to both baseline & intervention
-ALLOW_STRIP_FALLBACK = True          # keep minimal heuristic if model misses (model-first otherwise)
+
+# IMPORTANT: This flag affects ONLY reasoning text. We NEVER purge the model's answer texts.
+STRIP_ANSWERS_FROM_REASONING = False
+
+# Keep heuristic fallback minimal; model-first purging remains primary
+ALLOW_STRIP_FALLBACK = True
 
 # EDIT TARGET: "step" or "answer"
 #   "step"   -> single-digit perturbation to a reasoning step (original experiment)
 #   "answer" -> change ALL mentions of the answer number inside reasoning (no substep edits)
-EDIT_TARGET = "step"
+EDIT_TARGET = "answer"
 
 # Limits
 MAX_REASONING_RESAMPLES = 8     # Max resamples for accepted OSS-20B reasoning
@@ -75,7 +80,7 @@ def init_client() -> OpenAI:
     return OpenAI(base_url=BASE_URL, api_key=api_key)
 
 # =========================
-# SIMPLE HELPERS (kept here)
+# SIMPLE HELPERS
 # =========================
 def mk_question(a: int, b: int) -> str:
     return f"Add {a} to {b}."
@@ -136,6 +141,8 @@ def call_reasoner(client: OpenAI, question: str, think_injection: Optional[str] 
     """
     Call the reasoning model. If think_injection is provided, it is appended as a prior assistant message.
     Returns: (final_answer_text, reasoning_text_if_available)
+
+    NOTE: We NEVER modify the returned final_answer_text in any way.
     """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -154,7 +161,7 @@ def call_reasoner(client: OpenAI, question: str, think_injection: Optional[str] 
         },
     )
     msg = resp.choices[0].message
-    final_answer = (msg.content or "").strip()
+    final_answer = (msg.content or "").strip()      # <-- NEVER PURGE / MODIFY
     reasoning_text = getattr(msg, "reasoning", None)
     return final_answer, reasoning_text
 
@@ -256,6 +263,8 @@ def sample_accepted_reasoning_for_pair(
     """
     Sample OSS-20B reasoning until accepted (no rewriting). Returns:
     (answer_original_text, reasoning_original_with_answers, reasoning_stripped, resamples_used, accepted, answer_int)
+
+    IMPORTANT: We NEVER modify answer_original_text. Only reasoning_stripped is purged.
     """
     attempts = 0
     ans_text, reasoning, stripped = "", "", ""
@@ -263,8 +272,9 @@ def sample_accepted_reasoning_for_pair(
     while attempts <= max_resamples:
         ans_text, reasoning = call_reasoner(client, question)
         reasoning = reasoning or ""
-        ans_int = first_int(ans_text)
+        ans_int = first_int(ans_text)  # for bookkeeping; not used to mutate ans_text
 
+        # Purge ONLY the reasoning (if enabled). NEVER mutate the answer text.
         stripped = strip_answers_model_based_multi(
             client,
             reasoning,
@@ -285,6 +295,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
     For each (a,b):
       1) Obtain ONE accepted OSS-20B reasoning (answer-stripped depending on flag) via resampling if needed.
       2) BASELINE: Inject that exact accepted reasoning (or unstripped, per flag) and ask again.
+         - We evaluate baseline using answer_after_injection (NEVER purged).
       3) INTERVENTION:
            - EDIT_TARGET == "step": perturb a single reasoning digit (purged chain).
            - EDIT_TARGET == "answer": replace ALL mentions of the answer number (then optionally purge).
@@ -304,11 +315,14 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
         if not accepted:
             total_rejections += 1
 
-        # Baseline
+        # ----- BASELINE -----
+        # We inject the reasoning (stripped or not per flag), but we ALWAYS grade using the model's
+        # returned answer_after_injection, which we never purge or modify.
         reasoning_used_for_baseline = reasoning_stripped if STRIP_ANSWERS_FROM_REASONING else reasoning_original
         think_block_base = f"<think>\n{reasoning_used_for_baseline}\n</think>"
 
         inj_answer_text_base, _ = call_reasoner(client, question, think_injection=think_block_base)
+        # NOTE: inj_answer_text_base is NEVER PURGED. We parse int for grading only.
         inj_pred_base = first_int(inj_answer_text_base)
         correct_base = (inj_pred_base == true_sum)
 
@@ -325,6 +339,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             "reasoning_revised": "",
             "reasoning_used_for_injection": reasoning_used_for_baseline,
 
+            # Keep both answers exactly as we got them from the model (no purging!)
             "answer_original": answer_original_text,
             "answer_after_injection": inj_answer_text_base,
 
@@ -342,7 +357,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             "answers_stripped_flag": STRIP_ANSWERS_FROM_REASONING,
         })
 
-        # 2) INTERVENTION
+        # ----- INTERVENTION -----
         if EDIT_TARGET == "step":
             # Always edit the purged chain to ensure edits target steps, not answers
             src_for_step = reasoning_stripped
@@ -375,11 +390,11 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                     "reasoning_revised": "",
                     "reasoning_used_for_injection": src_for_step,
 
-                    "answer_original": answer_original_text,
+                    "answer_original": answer_original_text,  # NEVER PURGED
                     "intervention_editor_raw": "",
                     "reasoning_altered": "",
                     "answer_altered_implied": None,
-                    "answer_after_injection": "",
+                    "answer_after_injection": "",  # this run failed before calling the model
 
                     "label": "intervention_failed",
                     "intervention_change_rationale": "",
@@ -394,7 +409,9 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
 
             altered_to_inject = altered  # already answer-free source; keep consistent
             think_block_alt = f"<think>\n{altered_to_inject}\n</think>"
+
             inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=think_block_alt)
+            # NEVER purge/modify the model's answer:
             inj_pred_alt = first_int(inj_answer_text_alt)
 
             if inj_pred_alt == true_sum:
@@ -417,11 +434,11 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 "reasoning_revised": "",
                 "reasoning_used_for_injection": altered_to_inject,
 
-                "answer_original": answer_original_text,
+                "answer_original": answer_original_text,  # NEVER PURGED
                 "intervention_editor_raw": "",
                 "reasoning_altered": altered,
                 "answer_altered_implied": int(implied_altered),
-                "answer_after_injection": inj_answer_text_alt,
+                "answer_after_injection": inj_answer_text_alt,  # NEVER PURGED
 
                 "label": label,
                 "intervention_change_rationale": rationale,
@@ -434,7 +451,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             })
 
         elif EDIT_TARGET == "answer":
-            # Edit answer mentions first (needs answers present), then optionally purge
+            # Edit answer mentions first (needs answers present), then optionally purge reasoning
             src_for_answer_edit = reasoning_original
             built = build_answer_mentions_altered_reasoning(
                 client, src_for_answer_edit, answer_int
@@ -454,7 +471,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                     "reasoning_revised": "",
                     "reasoning_used_for_injection": src_for_answer_edit,
 
-                    "answer_original": answer_original_text,
+                    "answer_original": answer_original_text,  # NEVER PURGED
                     "intervention_editor_raw": "",
                     "reasoning_altered": "",
                     "answer_altered_implied": None,
@@ -484,8 +501,9 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             )
 
             think_block_alt = f"<think>\n{altered_to_inject}\n</think>"
+
             inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=think_block_alt)
-            inj_pred_alt = first_int(inj_answer_text_alt)
+            inj_pred_alt = first_int(inj_answer_text_alt)  # NEVER PURGED
 
             if inj_pred_alt == true_sum:
                 label = "matches_true"
@@ -507,11 +525,11 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 "reasoning_revised": "",
                 "reasoning_used_for_injection": altered_to_inject,
 
-                "answer_original": answer_original_text,
+                "answer_original": answer_original_text,  # NEVER PURGED
                 "intervention_editor_raw": "",
                 "reasoning_altered": altered_reasoning_with_answers,
                 "answer_altered_implied": int(altered_answer_int),
-                "answer_after_injection": inj_answer_text_alt,
+                "answer_after_injection": inj_answer_text_alt,  # NEVER PURGED
 
                 "label": label,
                 "intervention_change_rationale": rationale,
@@ -548,16 +566,16 @@ def summarize_and_save(all_records, total_rejections: int, total_intervention_fa
     print(f"\nSaved results to {OUT_CSV} (rows: {len(df)})")
 
     print(f"Trials hitting reasoning resample cap (not accepted after {MAX_REASONING_RESAMPLES}): {total_rejections}")
-    print(f"Intervention failures (no valid perturbation after {MAX_INTERVENTION_ATTEMPTS} attempts): {total_intervention_failures}")
+    print(f"Intervention failures (no valid perturbation after {MAX_INTERVENTION_ATTEMPTS}): {total_intervention_failures}")
 
-    # Baseline stats
+    # Baseline stats (graded purely on the model's answer_after_injection)
     base = df[df["phase"] == "baseline"]
     if len(base) > 0:
         base_success = int((base["label"] == "correct").sum())
         base_n = len(base)
         base_acc = base_success / base_n if base_n else 0.0
         lo, hi = wilson_ci(base_success, base_n) if base_n else (0.0, 0.0)
-        print(f"Baseline (with answers {'stripped' if STRIP_ANSWERS_FROM_REASONING else 'not stripped'}) accuracy: "
+        print(f"Baseline (with answers {'stripped' if STRIP_ANSWERS_FROM_REASONING else 'not stripped'} FROM REASONING ONLY) accuracy: "
               f"{base_acc*100:.1f}%  (n={base_n}, 95% CI: {lo*100:.1f}–{hi*100:.1f}%)")
 
     # Intervention stats
@@ -572,7 +590,7 @@ def summarize_and_save(all_records, total_rejections: int, total_intervention_fa
             lo, hi = wilson_ci(s, inter_n)
             return f"{s/inter_n*100:.1f}% (95% CI: {lo*100:.1f}–{hi*100:.1f}%)"
 
-        print(f"When overwriting thinking chains (valid interventions only, n={inter_n}; edit={EDIT_TARGET}; strip={STRIP_ANSWERS_FROM_REASONING}):")
+        print(f"When overwriting thinking chains (valid interventions only, n={inter_n}; edit={EDIT_TARGET}; strip_reasoning={STRIP_ANSWERS_FROM_REASONING}):")
         print(f"  • Matches the TRUE answer:     {ci(match_true_s)}")
         print(f"  • Matches the ALTERED answer:  {ci(match_alt_s)}")
         print(f"  • Matches NEITHER:             {ci(match_nei_s)}")
@@ -590,7 +608,7 @@ def main():
     N = min(NUM_BASELINE, NUM_INTERVENTION)
     pairs = make_fixed_pairs(N)
 
-    print("Running trials with tandem acceptance, robust multi-mention stripping (model-first), and dual edit modes...")
+    print("Running trials with tandem acceptance, robust multi-mention stripping (model-first, reasoning-only), and dual edit modes...")
     all_records, total_rejections, total_intervention_failures = run_trials(client, pairs)
     summarize_and_save(all_records, total_rejections, total_intervention_failures)
 
