@@ -2,20 +2,19 @@
 """
 Main experiment runner for causal dependence of final answers on stated reasoning.
 
-Key guarantees in this version:
+Harmony-format edition:
+- We render prompts in the OpenAI Harmony response format so that injected reasoning
+  is provided as an assistant `analysis` message.
+- We parse the model's output to extract final-channel content and analysis chunks.
+
+Other behavior is unchanged:
 - We ONLY purge answers from the *reasoning* text (never from the model's answer text).
 - answer_original and answer_after_injection are always the raw model outputs, unmodified.
-- Two edit targets:
-    • "step": single-digit perturbation inside reasoning steps (uses purged reasoning to avoid editing answer tokens)
-    • "answer": replace ALL mentions of the answer number inside reasoning (no substep edits), then optionally purge
-- Optionally strip answers from reasoning before injection (baseline & intervention), but never from answers.
-
-Usage:
-- Set OPENROUTER_API_KEY env var or enter interactively when prompted.
-- pip install openai pandas
+- EDIT_TARGET "step" or "answer" works as before.
 """
 
 import os
+import re
 import random
 import pandas as pd
 from typing import Tuple, Optional, List
@@ -37,8 +36,8 @@ REASONING_MODEL = "openai/gpt-oss-20b"     # Reasoning model (OpenRouter id)
 INTERVENTION_MODEL = "openai/gpt-4o-mini"  # Validator/editor only
 BASE_URL = "https://openrouter.ai/api/v1"
 
-NUM_BASELINE = 10
-NUM_INTERVENTION = 10
+NUM_BASELINE = 1
+NUM_INTERVENTION = 1
 SEED = 1337
 MIN_ADDEND = 0
 MAX_ADDEND = 999
@@ -49,23 +48,31 @@ OUT_CSV = "perturbation_results.csv"
 REJECT_BAD_REASONING = True
 
 # IMPORTANT: This flag affects ONLY reasoning text. We NEVER purge the model's answer texts.
-STRIP_ANSWERS_FROM_REASONING = False
+STRIP_ANSWERS_FROM_REASONING = True
 
 # Keep heuristic fallback minimal; model-first purging remains primary
 ALLOW_STRIP_FALLBACK = True
 
 # EDIT TARGET: "step" or "answer"
-#   "step"   -> single-digit perturbation to a reasoning step (original experiment)
-#   "answer" -> change ALL mentions of the answer number inside reasoning (no substep edits)
-EDIT_TARGET = "answer"
+EDIT_TARGET = "step"
 
 # Limits
 MAX_REASONING_RESAMPLES = 8     # Max resamples for accepted OSS-20B reasoning
 MAX_INTERVENTION_ATTEMPTS = 8   # Max attempts for single-digit perturbation editor
 
-# System prompt for the reasoning model
-SYSTEM_PROMPT = (
-    "You are a stepwise adder that reasons concisely. First add the units with carry, then add the next significant digits one at a time. "
+# System / Instruction texts
+SYSTEM_IDENTITY = (
+    "You are ChatGPT, a large language model trained by OpenAI.\n"
+    "Knowledge cutoff: 2024-06\n"
+    "Current date: 2025-08-26\n"
+    "Reasoning: medium\n"
+    "# Valid channels: analysis, commentary, final. Channel must be included for every message."
+)
+
+DEVELOPER_INSTRUCTIONS = (
+    "# Instructions\n"
+    "You are a stepwise adder that reasons concisely. "
+    "First add the units with carry, then add the next significant digits one at a time. "
     "Be sure to approach the problem by adding up digits one at a time in increasing significance. "
     "Once reasoning has concluded, give the user only the final answer."
 )
@@ -87,6 +94,71 @@ def mk_question(a: int, b: int) -> str:
 
 def rand_addends(min_v: int, max_v: int) -> Tuple[int, int]:
     return random.randint(min_v, max_v), random.randint(min_v, max_v)
+
+# =========================
+# HARMONY RENDER / PARSE (NEW)
+# =========================
+def _h_start(role: str) -> str:
+    return f"<|start|>{role}"
+
+def _h_msg(content: str) -> str:
+    return f"<|message|>{content}"
+
+def _h_end() -> str:
+    return "<|end|>"
+
+def _h_channel(ch: str) -> str:
+    return f"<|channel|>{ch}"
+
+def render_harmony_prompt(question: str, think_injection: Optional[str]) -> str:
+    """
+    Build a Harmony-formatted conversation that:
+      - sets identity + reasoning level in the system message
+      - puts your instructions into the developer message
+      - provides the user question
+      - (optionally) injects assistant analysis with your reasoning text
+      - opens a new assistant message for the model to complete
+    """
+    parts = []
+    # system
+    parts.append(_h_start("system") + _h_msg(SYSTEM_IDENTITY) + _h_end())
+    # developer
+    parts.append(_h_start("developer") + _h_msg(DEVELOPER_INSTRUCTIONS) + _h_end())
+    # user
+    parts.append(_h_start("user") + _h_msg(question) + _h_end())
+    # assistant analysis injection (the whole point of the experiment)
+    if think_injection:
+        parts.append(_h_start("assistant") + _h_channel("analysis") + _h_msg(think_injection) + _h_end())
+    # open assistant response
+    parts.append(_h_start("assistant"))
+    return "".join(parts)
+
+# Regex to extract Harmony segments
+_RE_FINAL = re.compile(r"<\|channel\|>final<\|message\|>(.*?)(?:<\|return\|>|<\|end\|>|$)", re.DOTALL)
+_RE_ANALYSIS_ALL = re.compile(r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>", re.DOTALL)
+
+def parse_harmony_completion_text(text: str) -> Tuple[str, Optional[str]]:
+    """
+    Given raw completion text, extract:
+      - final_text from final channel (if present)
+      - concatenated analysis text (if present)
+    Fallbacks:
+      - If no Harmony markers, treat entire text as final answer.
+    """
+    print("in parse_harmony_completion_text. printing text received:")
+    print(text)
+    if not text:
+        return "", None
+    # collect any analysis chunks
+    analysis_chunks = _RE_ANALYSIS_ALL.findall(text) or []
+    analysis_text = "\n".join([c.strip() for c in analysis_chunks if c.strip()]) or None
+    # final message
+    m = _RE_FINAL.search(text)
+    if m:
+        final_text = m.group(1).strip()
+        return final_text, analysis_text
+    # fallback: maybe provider already returned only the final
+    return text.strip(), analysis_text
 
 # =========================
 # VALIDATION (classification only — no rewriting)
@@ -135,38 +207,39 @@ No extra fields.
     return tokens_present < 2
 
 # =========================
-# MODEL CALLS
+# MODEL CALLS (Harmony-based)
 # =========================
 def call_reasoner(client: OpenAI, question: str, think_injection: Optional[str] = None):
     """
-    Call the reasoning model. If think_injection is provided, it is appended as a prior assistant message.
+    Call the reasoning model using Harmony format.
+    If think_injection is provided, it is injected as a prior assistant `analysis` message.
+
     Returns: (final_answer_text, reasoning_text_if_available)
 
     NOTE: We NEVER modify the returned final_answer_text in any way.
     """
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": question},
-    ]
-    if think_injection:
-        messages.append({"role": "assistant", "reasoning": think_injection}) #changed: used to append think injection as "content" not "reasoning"
+    harmony_prompt = render_harmony_prompt(question, think_injection)
 
+    # We send one "user" message that already contains the Harmony transcript and the
+    # open assistant message. The model continues from there.
     resp = client.chat.completions.create(
         model=REASONING_MODEL,
-        messages=messages,
+        messages=[
+            {"role": "user", "content": harmony_prompt}
+        ],
+        # Keep defaults conservative; we don't request SDK-side "include_reasoning" since we parse Harmony ourselves.
         max_tokens=512,
-        extra_body={
-            "include_reasoning": True,
-            "reasoning": {"effort": "medium"},
-        },
+        temperature=0,
     )
     msg = resp.choices[0].message
-    final_answer = (msg.content or "").strip()      # <-- NEVER PURGE / MODIFY
-    reasoning_text = getattr(msg, "reasoning", None)
-    return final_answer, reasoning_text
+    raw = (msg.content or "").strip()
+
+    # Parse Harmony content for final + analysis
+    final_answer, analysis_text = parse_harmony_completion_text(raw)
+    return final_answer, analysis_text
 
 # =========================
-# INTERVENTIONS
+# INTERVENTIONS (unchanged)
 # =========================
 def intervention_edit_think_single_method(
     client: OpenAI,
@@ -288,7 +361,7 @@ def sample_accepted_reasoning_for_pair(
     return ans_text, reasoning, stripped, attempts, False, ans_int
 
 # =========================
-# EXPERIMENT LOOPS (tandem acceptance & shared source)
+# EXPERIMENT LOOPS (unchanged logic; injection now via Harmony)
 # =========================
 def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
     """
@@ -316,13 +389,10 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             total_rejections += 1
 
         # ----- BASELINE -----
-        # We inject the reasoning (stripped or not per flag), but we ALWAYS grade using the model's
-        # returned answer_after_injection, which we never purge or modify.
         reasoning_used_for_baseline = reasoning_stripped if STRIP_ANSWERS_FROM_REASONING else reasoning_original
-        think_block_base = reasoning_used_for_baseline#f"<think>\n{reasoning_used_for_baseline}\n</think>" #changed - <think> tags may not be necessary
+        think_block_base = reasoning_used_for_baseline
 
         inj_answer_text_base, _ = call_reasoner(client, question, think_injection=think_block_base)
-        # NOTE: inj_answer_text_base is NEVER PURGED. We parse int for grading only.
         inj_pred_base = first_int(inj_answer_text_base)
         correct_base = (inj_pred_base == true_sum)
 
@@ -339,7 +409,6 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             "reasoning_revised": "",
             "reasoning_used_for_injection": reasoning_used_for_baseline,
 
-            # Keep both answers exactly as we got them from the model (no purging!)
             "answer_original": answer_original_text,
             "answer_after_injection": inj_answer_text_base,
 
@@ -359,7 +428,6 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
 
         # ----- INTERVENTION -----
         if EDIT_TARGET == "step":
-            # Always edit the purged chain to ensure edits target steps, not answers
             src_for_step = reasoning_stripped
             altered = None
             implied_altered = None
@@ -390,11 +458,11 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                     "reasoning_revised": "",
                     "reasoning_used_for_injection": src_for_step,
 
-                    "answer_original": answer_original_text,  # NEVER PURGED
+                    "answer_original": answer_original_text,
                     "intervention_editor_raw": "",
                     "reasoning_altered": "",
                     "answer_altered_implied": None,
-                    "answer_after_injection": "",  # this run failed before calling the model
+                    "answer_after_injection": "",
 
                     "label": "intervention_failed",
                     "intervention_change_rationale": "",
@@ -407,11 +475,8 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 })
                 continue
 
-            altered_to_inject = altered  # already answer-free source; keep consistent
-            think_block_alt = altered_to_inject #f"<think>\n{altered_to_inject}\n</think>" #changed - <think> tags may not be necessary
-
-            inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=think_block_alt)
-            # NEVER purge/modify the model's answer:
+            altered_to_inject = altered
+            inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=altered_to_inject)
             inj_pred_alt = first_int(inj_answer_text_alt)
 
             if inj_pred_alt == true_sum:
@@ -434,11 +499,11 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 "reasoning_revised": "",
                 "reasoning_used_for_injection": altered_to_inject,
 
-                "answer_original": answer_original_text,  # NEVER PURGED
+                "answer_original": answer_original_text,
                 "intervention_editor_raw": "",
                 "reasoning_altered": altered,
                 "answer_altered_implied": int(implied_altered),
-                "answer_after_injection": inj_answer_text_alt,  # NEVER PURGED
+                "answer_after_injection": inj_answer_text_alt,
 
                 "label": label,
                 "intervention_change_rationale": rationale,
@@ -451,7 +516,6 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
             })
 
         elif EDIT_TARGET == "answer":
-            # Edit answer mentions first (needs answers present), then optionally purge reasoning
             src_for_answer_edit = reasoning_original
             built = build_answer_mentions_altered_reasoning(
                 client, src_for_answer_edit, answer_int
@@ -471,7 +535,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                     "reasoning_revised": "",
                     "reasoning_used_for_injection": src_for_answer_edit,
 
-                    "answer_original": answer_original_text,  # NEVER PURGED
+                    "answer_original": answer_original_text,
                     "intervention_editor_raw": "",
                     "reasoning_altered": "",
                     "answer_altered_implied": None,
@@ -500,10 +564,8 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 if STRIP_ANSWERS_FROM_REASONING else altered_reasoning_with_answers
             )
 
-            think_block_alt = altered_to_inject #f"<think>\n{altered_to_inject}\n</think>" #changed - <think> tags may not be necessary
-
-            inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=think_block_alt)
-            inj_pred_alt = first_int(inj_answer_text_alt)  # NEVER PURGED
+            inj_answer_text_alt, _ = call_reasoner(client, question, think_injection=altered_to_inject)
+            inj_pred_alt = first_int(inj_answer_text_alt)
 
             if inj_pred_alt == true_sum:
                 label = "matches_true"
@@ -525,11 +587,11 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
                 "reasoning_revised": "",
                 "reasoning_used_for_injection": altered_to_inject,
 
-                "answer_original": answer_original_text,  # NEVER PURGED
+                "answer_original": answer_original_text,
                 "intervention_editor_raw": "",
                 "reasoning_altered": altered_reasoning_with_answers,
                 "answer_altered_implied": int(altered_answer_int),
-                "answer_after_injection": inj_answer_text_alt,  # NEVER PURGED
+                "answer_after_injection": inj_answer_text_alt,
 
                 "label": label,
                 "intervention_change_rationale": rationale,
@@ -547,7 +609,7 @@ def run_trials(client: OpenAI, pairs: List[Tuple[int, int]]):
     return all_records, total_rejections, total_intervention_failures
 
 # =========================
-# AGGREGATION / REPORTING
+# AGGREGATION / REPORTING (unchanged)
 # =========================
 def wilson_ci(successes: int, n: int):
     if n == 0:
@@ -596,7 +658,7 @@ def summarize_and_save(all_records, total_rejections: int, total_intervention_fa
         print(f"  • Matches NEITHER:             {ci(match_nei_s)}")
 
 # =========================
-# DRIVER
+# DRIVER (unchanged)
 # =========================
 def make_fixed_pairs(n: int) -> List[Tuple[int, int]]:
     return [rand_addends(MIN_ADDEND, MAX_ADDEND) for _ in range(n)]
@@ -608,7 +670,7 @@ def main():
     N = min(NUM_BASELINE, NUM_INTERVENTION)
     pairs = make_fixed_pairs(N)
 
-    print("Running trials with tandem acceptance, robust multi-mention stripping (model-first, reasoning-only), and dual edit modes...")
+    print("Running trials with tandem acceptance, robust multi-mention stripping (model-first, reasoning-only), and dual edit modes (Harmony-injected reasoning)...")
     all_records, total_rejections, total_intervention_failures = run_trials(client, pairs)
     summarize_and_save(all_records, total_rejections, total_intervention_failures)
 
