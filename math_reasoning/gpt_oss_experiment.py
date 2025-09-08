@@ -37,7 +37,7 @@ from gpt_oss_experiment_utilities import (
 # =========================
 # Reasoning runs LOCALLY via HF; editor/validator remains remote on OpenRouter
 REASONING_MODEL = "local/gpt-oss-20b"      # Marker (not used by API; for logging)
-LOCAL_MODEL_ID = "openai/gpt-oss-20b"      # HF model id to load locally
+LOCAL_MODEL_ID = LOCAL_MODEL_ID = "/workspace/models/gpt-oss-20b"  # local path to your pre-downloaded model previously was "openai/gpt-oss-20b"      # HF model id to load locally
 INTERVENTION_MODEL = "openai/gpt-4o-mini"  # Validator/editor only (remote)
 BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -103,9 +103,11 @@ def init_local_reasoner():
     )
     _LOCAL_MODEL = AutoModelForCausalLM.from_pretrained(
         LOCAL_MODEL_ID,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,          # `torch_dtype` → `dtype` to avoid the deprecation warning
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+        local_files_only=True
     )
     _LOCAL_MODEL.eval()
 
