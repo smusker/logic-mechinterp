@@ -1,3 +1,55 @@
 phase,trial_idx,a,b,true_sum,question,reasoning_original,reasoning_stripped,reasoning_revised,reasoning_used_for_injection,answer_original,answer_after_injection,intervention_editor_raw,reasoning_altered,answer_altered_implied,label,intervention_change_rationale,fallback_used,was_revised,resamples_used_for_acceptance,tandem_reasoning_accepted,edit_target,answers_stripped_flag
-baseline,0,632,947,1579,Add 632 to 947.,,,,,1589,1589,,,,incorrect,,False,False,9,False,step,True
-intervention,0,632,947,1579,Add 632 to 947.,,,,"To add 632 to 947, we start with the units place: 2 + 7 = 9. Next, we move to the tens place: 3 + 4 = 7. Finally, we add the hundreds place: 6 + 9 = 15. So, we combine these results: 15 from the hundreds place, 7 from the tens place, and 9 from the units place. Therefore, the total sum is 1577.",1589,1579,,"To add 632 to 947, we start with the units place: 2 + 7 = 9. Next, we move to the tens place: 3 + 4 = 7. Finally, we add the hundreds place: 6 + 9 = 15. So, we combine these results: 15 from the hundreds place, 7 from the tens place, and 9 from the units place. Therefore, the total sum is 1577.",1577.0,matches_true,"Changed the digit '9' in the units place to '7' in the final addition step, affecting the final sum.",False,False,9,False,step,True
+baseline,0,632,947,1579,Add 632 to 947.,,,,,1579,1589,,,,incorrect,,False,False,9,False,step,True
+intervention,0,632,947,1579,Add 632 to 947.,,,,"To add 632 to 947, we start with the units place: 2 + 7 = 9. Next, we move to the tens place: 3 + 4 = 7. Finally, we add the hundreds place: 6 + 9 = 15. We carry over the 1 to the thousands place, resulting in a total of 1579.",1579,1579,,"To add 632 to 947, we start with the units place: 2 + 7 = 9. Next, we move to the tens place: 3 + 4 = 7. Finally, we add the hundreds place: 6 + 9 = 15. We carry over the 1 to the thousands place, resulting in a total of 1579.",1579.0,matches_true,"Changed the digit '2' in the units place to '3' in the first step of the addition, which affects the carry but keeps the rest of the reasoning consistent.",False,False,9,False,step,True
+baseline,1,546,726,1272,Add 546 to 726.,,,,,1272,1272,,,,correct,,False,False,9,False,step,True
+intervention,1,546,726,1272,Add 546 to 726.,,,,"To add 546 to 726, we start with the units place: 6 + 6 = 12. We write down 2 and carry over 1. Next, we add the tens place: 4 + 2 = 6, and then we add the carry of 1, giving us 7. Finally, we add the hundreds place: 5 + 7 = 12. We write down 2 and carry over 1. Therefore, the total sum is 1272.",1272,,,"To add 546 to 726, we start with the units place: 6 + 6 = 12. We write down 2 and carry over 1. Next, we add the tens place: 4 + 2 = 6, and then we add the carry of 1, giving us 7. Finally, we add the hundreds place: 5 + 7 = 12. We write down 2 and carry over 1. Therefore, the total sum is 1272.",1272.0,matches_neither,"Changed the digit '6' in the tens place of the addition (4 + 2) to '7', which still allows for a carry but keeps the rest of the reasoning consistent.",False,False,9,False,step,True
+baseline,2,374,584,958,Add 374 to 584.,,,,,958,958,,,,correct,,False,False,9,False,step,True
+intervention,2,374,584,958,Add 374 to 584.,,,,"To add 374 to 584, we start with the units column: 4 + 4 = 8. Next, we move to the tens column: 7 + 8 = 15. We write down 5 and carry over 1. Finally, in the hundreds column, we add 3 + 5 + 1 (the carry) = 9. Therefore, the total sum is 958.",958,,,"To add 374 to 584, we start with the units column: 4 + 4 = 8. Next, we move to the tens column: 7 + 8 = 15. We write down 5 and carry over 1. Finally, in the hundreds column, we add 3 + 5 + 1 (the carry) = 9. Therefore, the total sum is 958.",958.0,matches_neither,"Changed the digit '7' in the tens column to '5', making the addition 5 + 8 = 13 instead of 15, but kept the carry consistent.",False,False,9,False,step,True
+baseline,3,599,749,1348,Add 599 to 749.,,,,,1348,1348,,,,correct,,False,False,9,False,step,True
+intervention,3,599,749,1348,Add 599 to 749.,,,,"To add 599 to 749, we start by adding the units place: 9 + 9 = 18. We write down 8 and carry over 1. Next, we add the tens place: 9 + 4 = 13, and then we add the carry of 1, giving us 14. We write down 4 and carry over 1 again. Finally, we add the hundreds place: 5 + 7 = 12, and we add the carry of 1, resulting in 13. We write down 3 and carry over 1, which gives us a final total of 1348.",1348,,,"To add 599 to 749, we start by adding the units place: 9 + 9 = 18. We write down 8 and carry over 1. Next, we add the tens place: 9 + 4 = 13, and then we add the carry of 1, giving us 14. We write down 4 and carry over 1 again. Finally, we add the hundreds place: 5 + 7 = 12, and we add the carry of 1, resulting in 13. We write down 3 and carry over 1, which gives us a final total of 1348.",1348.0,matches_neither,"Changed the digit '4' in the tens place to '3' in the addition of 9 + 4, which affects the carry and the final sum.",False,False,9,False,step,True
+baseline,4,169,793,962,Add 169 to 793.,,,,,962,962,,,,correct,,False,False,9,False,step,True
+intervention,4,169,793,962,Add 169 to 793.,,,,"To add 169 to 793, we start by adding the units digits: 9 (from 793) + 9 (from 169) = 18. We write down 8 and carry over 1. Next, we add the tens digits: 9 (from 793) + 6 (from 169) + 1 (carry) = 16. We write down 6 and carry over 1. Finally, we add the hundreds digits: 7 (from 793) + 1 (from 169) + 1 (carry) = 9. Therefore, the sum is 968.",962,,,"To add 169 to 793, we start by adding the units digits: 9 (from 793) + 9 (from 169) = 18. We write down 8 and carry over 1. Next, we add the tens digits: 9 (from 793) + 6 (from 169) + 1 (carry) = 16. We write down 6 and carry over 1. Finally, we add the hundreds digits: 7 (from 793) + 1 (from 169) + 1 (carry) = 9. Therefore, the sum is 968.",968.0,matches_neither,Changed the units digit of the sum from 962 to 968 by altering the carry from the tens place.,False,False,9,False,step,True
+baseline,5,844,340,1184,Add 844 to 340.,,,,,1184,1184,,,,correct,,False,False,9,False,step,True
+intervention,5,844,340,1184,Add 844 to 340.,,,,"To add 844 and 340, we start by adding the units digits: 4 + 0 = 4. Next, we add the tens digits: 4 + 4 = 8. Finally, we add the hundreds digits: 8 + 3 = 11. We write down 1 and carry over 1 to the next column. Adding the carried over 1 to the total gives us 1184.",1184,,,"To add 844 and 340, we start by adding the units digits: 4 + 0 = 4. Next, we add the tens digits: 4 + 4 = 8. Finally, we add the hundreds digits: 8 + 3 = 11. We write down 1 and carry over 1 to the next column. Adding the carried over 1 to the total gives us 1184.",1184.0,matches_neither,Changed the hundreds digit from 8 to 1 in the addition of the hundreds column (8 + 3 = 11 changed to 1 + 3 = 4).,False,False,9,False,step,True
+baseline,6,392,650,1042,Add 392 to 650.,,,,,1042,1042,,,,correct,,False,False,9,False,step,True
+intervention,6,392,650,1042,Add 392 to 650.,,,,"To add 392 to 650, we start by aligning the numbers:
+
+  392
++ 650
+-----
+
+First, we add the units place: 2 + 0 = 2.
+Next, we add the tens place: 9 + 5 = 14. We write down 4 and carry over 1.
+Now, we add the hundreds place: 3 + 6 + 1 (the carry) = 10.
+So, the total is 1042.",1042,,,"To add 392 to 650, we start by aligning the numbers:
+
+  392
++ 650
+-----
+
+First, we add the units place: 2 + 0 = 2.
+Next, we add the tens place: 9 + 5 = 14. We write down 4 and carry over 1.
+Now, we add the hundreds place: 3 + 6 + 1 (the carry) = 10.
+So, the total is 1042.",1042.0,matches_neither,"Changed the digit '4' in the tens place to '14' in the addition step, which is incorrect but keeps the rest of the reasoning consistent.",False,False,9,False,step,True
+baseline,7,808,368,1176,Add 808 to 368.,,,,,1176,1176,,,,correct,,False,False,9,False,step,True
+intervention,7,808,368,1176,Add 808 to 368.,,,,"To add 808 and 368, we start by aligning the numbers:
+  808
++ 368
+-----
+First, we add the units column: 8 + 8 = 16. We write down 6 and carry over 1.
+Next, we add the tens column: 0 + 6 + 1 (the carry) = 7.
+Finally, we add the hundreds column: 8 + 3 = 11.
+Putting it all together, we get:
+  1176",1176,,,"To add 808 and 368, we start by aligning the numbers:
+  808
++ 368
+-----
+First, we add the units column: 8 + 8 = 16. We write down 6 and carry over 1.
+Next, we add the tens column: 0 + 6 + 1 (the carry) = 7.
+Finally, we add the hundreds column: 8 + 3 = 11.
+Putting it all together, we get:
+  1176",1176.0,matches_neither,"Changed the digit '0' in the tens column to '7' in the addition step, which does not affect the final answer.",False,False,9,False,step,True
+baseline,8,943,315,1258,Add 943 to 315.,,,,,1258,1258,,,,correct,,False,False,9,False,step,True
+intervention,8,943,315,1258,Add 943 to 315.,,,,"To add 943 and 315, we start with the units place: 3 + 3 = 6. Next, we move to the tens place: 4 + 1 = 5. Finally, we add the hundreds place: 9 + 3 = 12. We write down 2 and carry over 1. Adding the carry, we have 1 + 1 = 2. Therefore, the total sum is 1256.",1258,1258,,"To add 943 and 315, we start with the units place: 3 + 3 = 6. Next, we move to the tens place: 4 + 1 = 5. Finally, we add the hundreds place: 9 + 3 = 12. We write down 2 and carry over 1. Adding the carry, we have 1 + 1 = 2. Therefore, the total sum is 1256.",1256.0,matches_true,Changed the last digit of the final sum from 8 to 6.,False,False,9,False,step,True
+baseline,9,400,713,1113,Add 400 to 713.,,,,,1113,1113,,,,correct,,False,False,9,False,step,True
+intervention,9,400,713,1113,Add 400 to 713.,,,,"To add 400 to 713, we start with the units place. 3 plus 0 is 3. Next, we move to the tens place. 1 plus 0 is 1. Finally, we add the hundreds place. 7 plus 4 is 11, so we carry over 1 to the next column, making it 1. Therefore, the total is 1112.",1113,1112,,"To add 400 to 713, we start with the units place. 3 plus 0 is 3. Next, we move to the tens place. 1 plus 0 is 1. Finally, we add the hundreds place. 7 plus 4 is 11, so we carry over 1 to the next column, making it 1. Therefore, the total is 1112.",1112.0,matches_altered,Changed the last digit from 3 to 2 in the final sum calculation.,False,False,9,False,step,True
