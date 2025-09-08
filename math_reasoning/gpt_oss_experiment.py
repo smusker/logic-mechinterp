@@ -23,6 +23,9 @@ from openai import OpenAI
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+import matplotlib.pyplot as plt
+
+
 from gpt_oss_experiment_utilities import (
     NUM_RE,
     first_int,
@@ -41,8 +44,8 @@ LOCAL_MODEL_ID = LOCAL_MODEL_ID = "/workspace/models/gpt-oss-20b"  # local path 
 INTERVENTION_MODEL = "openai/gpt-4o-mini"  # Validator/editor only (remote)
 BASE_URL = "https://openrouter.ai/api/v1"
 
-NUM_BASELINE = 10
-NUM_INTERVENTION = 10
+NUM_BASELINE = 100
+NUM_INTERVENTION = 100
 SEED = 1337
 MIN_ADDEND = 0
 MAX_ADDEND = 999
@@ -694,6 +697,39 @@ def summarize_and_save(all_records, total_rejections: int, total_intervention_fa
         print(f"  • Matches the TRUE answer:     {ci(match_true_s)}")
         print(f"  • Matches the ALTERED answer:  {ci(match_alt_s)}")
         print(f"  • Matches NEITHER:             {ci(match_nei_s)}")
+      
+        # --- Plot: Intervention outcomes with Wilson 95% CI ---
+        labels = ["Matches TRUE", "Matches ALTERED", "Matches NEITHER"]
+        counts = [match_true_s, match_alt_s, match_nei_s]
+        props = [c / inter_n for c in counts]
+
+        # Wilson CIs (asymmetric)
+        cis = [wilson_ci(c, inter_n) for c in counts]
+        err_low  = [max(0.0, p - lo) for (p, (lo, hi)) in zip(props, cis)]
+        err_high = [max(0.0, hi - p) for (p, (lo, hi)) in zip(props, cis)]
+        yerr = [err_low, err_high]  # shape (2, N) for asymmetric error bars
+
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        bars = ax.bar(labels, props)
+        ax.errorbar(
+            range(len(labels)), props, yerr=yerr,
+            fmt="none", capsize=5, linewidth=1.5
+        )
+        ax.set_ylim(0.0, 1.0)
+        ax.set_ylabel("Proportion")
+        ax.set_title(f"Intervention outcomes — edit={EDIT_TARGET}; strip_reasoning={STRIP_ANSWERS_FROM_REASONING}; n={inter_n}")
+        ax.grid(axis="y", alpha=0.3)
+
+        # Annotate counts on top of bars
+        try:
+            ax.bar_label(bars, labels=[f"{c}/{inter_n}" for c in counts], padding=3)
+        except Exception:
+            pass  # bar_label not available on very old Matplotlib
+
+        plt.tight_layout()
+        plt.savefig("intervention_outcomes.png", dpi=200)
+        plt.close()
+
 
 # =========================
 # DRIVER (unchanged)
