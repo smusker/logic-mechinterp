@@ -20,6 +20,9 @@ import pandas as pd
 from typing import Tuple, Optional, List
 from openai import OpenAI
 
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
 from gpt_oss_experiment_utilities import (
     NUM_RE,
     first_int,
@@ -32,8 +35,10 @@ from gpt_oss_experiment_utilities import (
 # =========================
 # CONFIG
 # =========================
-REASONING_MODEL = "openai/gpt-oss-20b"     # Reasoning model (OpenRouter id)
-INTERVENTION_MODEL = "openai/gpt-4o-mini"  # Validator/editor only
+# Reasoning runs LOCALLY via HF; editor/validator remains remote on OpenRouter
+REASONING_MODEL = "local/gpt-oss-20b"      # Marker (not used by API; for logging)
+LOCAL_MODEL_ID = "openai/gpt-oss-20b"      # HF model id to load locally
+INTERVENTION_MODEL = "openai/gpt-4o-mini"  # Validator/editor only (remote)
 BASE_URL = "https://openrouter.ai/api/v1"
 
 NUM_BASELINE = 10
@@ -76,6 +81,34 @@ DEVELOPER_INSTRUCTIONS = (
     "Be sure to approach the problem by adding up digits one at a time in increasing significance. "
     "Once reasoning has concluded, give the user only the final answer."
 )
+
+# =========================
+# LOCAL REASONER (HF) INIT
+# =========================
+_LOCAL_TOKENIZER = None
+_LOCAL_MODEL = None
+
+def init_local_reasoner():
+    """
+    Loads openai/gpt-oss-20b locally to GPU (A100).
+    Uses bfloat16 + device_map='auto'. Requires enough VRAM.
+    """
+    global _LOCAL_TOKENIZER, _LOCAL_MODEL
+    if _LOCAL_TOKENIZER is not None and _LOCAL_MODEL is not None:
+        return
+
+    _LOCAL_TOKENIZER = AutoTokenizer.from_pretrained(
+        LOCAL_MODEL_ID,
+        trust_remote_code=True
+    )
+    _LOCAL_MODEL = AutoModelForCausalLM.from_pretrained(
+        LOCAL_MODEL_ID,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        trust_remote_code=True
+    )
+    _LOCAL_MODEL.eval()
+
 
 # =========================
 # CLIENT INIT
@@ -218,25 +251,28 @@ def call_reasoner(client: OpenAI, question: str, think_injection: Optional[str] 
 
     NOTE: We NEVER modify the returned final_answer_text in any way.
     """
+    # Build Harmony prompt exactly as before
     harmony_prompt = render_harmony_prompt(question, think_injection)
 
-    # We send one "user" message that already contains the Harmony transcript and the
-    # open assistant message. The model continues from there.
-    resp = client.chat.completions.create(
-        model=REASONING_MODEL,
-        messages=[
-            {"role": "user", "content": harmony_prompt}
-        ],
-        # Keep defaults conservative; we don't request SDK-side "include_reasoning" since we parse Harmony ourselves.
-        max_tokens=512,
-        temperature=0,
-    )
-    msg = resp.choices[0].message
-    raw = (msg.content or "").strip()
+    # Use LOCAL HF MODEL for reasoning
+    init_local_reasoner()
+    inputs = _LOCAL_TOKENIZER(harmony_prompt, return_tensors="pt").to(_LOCAL_MODEL.device)
+
+    with torch.no_grad():
+        gen_out = _LOCAL_MODEL.generate(
+            **inputs,
+            do_sample=False,            # temperature=0 (greedy)
+            max_new_tokens=512,
+            pad_token_id=_LOCAL_TOKENIZER.eos_token_id
+        )
+    # Decode only the newly generated portion
+    # Simpler: decode the full output and rely on Harmony parsing
+    raw = _LOCAL_TOKENIZER.decode(gen_out[0], skip_special_tokens=False)
 
     # Parse Harmony content for final + analysis
     final_answer, analysis_text = parse_harmony_completion_text(raw)
     return final_answer, analysis_text
+
 
 # =========================
 # INTERVENTIONS (unchanged)
@@ -665,7 +701,12 @@ def make_fixed_pairs(n: int) -> List[Tuple[int, int]]:
 
 def main():
     random.seed(SEED)
+
+    # Remote client for editor/validator + utilities' model-first stripping
     client = init_client()
+
+    # Local HF model for reasoning
+    init_local_reasoner()
 
     N = min(NUM_BASELINE, NUM_INTERVENTION)
     pairs = make_fixed_pairs(N)
@@ -673,6 +714,7 @@ def main():
     print("Running trials with tandem acceptance, robust multi-mention stripping (model-first, reasoning-only), and dual edit modes (Harmony-injected reasoning)...")
     all_records, total_rejections, total_intervention_failures = run_trials(client, pairs)
     summarize_and_save(all_records, total_rejections, total_intervention_failures)
+
 
 if __name__ == "__main__":
     main()
