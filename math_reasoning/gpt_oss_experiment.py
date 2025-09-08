@@ -56,13 +56,13 @@ OUT_CSV = "perturbation_results.csv"
 REJECT_BAD_REASONING = True
 
 # IMPORTANT: This flag affects ONLY reasoning text. We NEVER purge the model's answer texts.
-STRIP_ANSWERS_FROM_REASONING = True
+STRIP_ANSWERS_FROM_REASONING = False
 
 # Keep heuristic fallback minimal; model-first purging remains primary
 ALLOW_STRIP_FALLBACK = True
 
 # EDIT TARGET: "step" or "answer"
-EDIT_TARGET = "step"
+EDIT_TARGET = "answer"
 
 # Limits
 MAX_REASONING_RESAMPLES = 8     # Max resamples for accepted OSS-20B reasoning
