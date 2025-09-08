@@ -36,8 +36,8 @@ REASONING_MODEL = "openai/gpt-oss-20b"     # Reasoning model (OpenRouter id)
 INTERVENTION_MODEL = "openai/gpt-4o-mini"  # Validator/editor only
 BASE_URL = "https://openrouter.ai/api/v1"
 
-NUM_BASELINE = 1
-NUM_INTERVENTION = 1
+NUM_BASELINE = 10
+NUM_INTERVENTION = 10
 SEED = 1337
 MIN_ADDEND = 0
 MAX_ADDEND = 999
