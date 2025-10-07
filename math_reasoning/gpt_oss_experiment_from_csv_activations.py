@@ -2,19 +2,7 @@
 # gpt_oss_experiment_from_csv_activation_patch.py
 """
 Activation-Patching Experiment (CSV-driven, completed reasoning) — single-position loop
-Aligned with the working notebook semantics (eager attention, no KV cache).
-
-What this does
---------------
-- BASELINE rows: run normally (no patch).
-- INTERVENTION rows: build BASE prompt (baseline reasoning) and SOURCE prompt (altered reasoning),
-  locate the edit via the tokenized length of the "up to edit" text, and patch a small neighborhood
-  one position at a time across the first few decode steps.
-
-Outputs
--------
-- CSV:  perturbation_results_edited_scored_activation_patch.csv
-- Plot: intervention_outcomes_activation_patch.png
+GPU-safe: eager attention, no KV cache, device_map="auto", explicit attention_mask.
 """
 
 from __future__ import annotations
@@ -39,7 +27,7 @@ def _lazy_imports():
         "IntervenableConfig": getattr(py, "IntervenableConfig"),
     }
 
-# ---- small helper from your utilities ----
+# ---- your helper ----
 from gpt_oss_experiment_utilities import first_int
 
 # =========================
@@ -49,22 +37,21 @@ INPUT_CSV   = "perturbation_results_edited.csv"
 OUTPUT_CSV  = "perturbation_results_edited_scored_activation_patch.csv"
 PLOT_PNG    = "intervention_outcomes_activation_patch.png"
 
-# Model path (match your local path)
 LOCAL_MODEL_ID  = "/workspace/models/gpt-oss-20b"
 
-# Loader settings to match notebook behavior
-DEVICE_MAP      = "cpu"        # notebook used CPU; set to "auto" or specific CUDA if desired
-ATTN_IMPL       = "eager"      # IMPORTANT: eager attention
-USE_CACHE       = False        # IMPORTANT: disable KV cache for Pyvene hooks
-DTYPE           = torch.bfloat16
+# Loader settings
+ATTN_IMPL   = "eager"       # important for hooks
+USE_CACHE   = False         # important for hooks
+DEVICE_MAP  = "auto"        # move to CUDA; avoids mxfp4 CPU error
+DTYPE       = torch.bfloat16
 
 # Patching config
-PATCH_LAYER       = 12
-PATCH_WINDOW      = 2           # patch positions [idx - W .. idx + W]
-MAX_NEW_TOKENS    = 512
-SEED              = 1337
+PATCH_LAYER     = 12
+PATCH_WINDOW    = 2          # indices [center-W, ..., center+W]
+MAX_NEW_TOKENS  = 512
+SEED            = 1337
 
-# Harmony scaffold
+# Harmony prompt
 SYSTEM_IDENTITY = (
     "You are ChatGPT, a large language model trained by OpenAI.\n"
     "Knowledge cutoff: 2024-06\n"
@@ -72,7 +59,6 @@ SYSTEM_IDENTITY = (
     "Reasoning: medium\n"
     "# Valid channels: analysis, commentary, final. Channel must be included for every message."
 )
-
 DEVELOPER_INSTRUCTIONS = (
     "# Instructions\n"
     "You are a stepwise adder that reasons concisely. "
@@ -81,20 +67,10 @@ DEVELOPER_INSTRUCTIONS = (
     "Once reasoning has concluded, give the user only the final answer."
 )
 
-# =========================
-# HARMONY RENDER / PARSE
-# =========================
-def _h_start(role: str) -> str:
-    return f"<|start|>{role}"
-
-def _h_msg(content: str) -> str:
-    return f"<|message|>{content}"
-
-def _h_end() -> str:
-    return "<|end|>"
-
-def _h_channel(ch: str) -> str:
-    return f"<|channel|>{ch}"
+def _h_start(role: str) -> str:   return f"<|start|>{role}"
+def _h_msg(content: str) -> str:  return f"<|message|>{content}"
+def _h_end() -> str:              return "<|end|>"
+def _h_channel(ch: str) -> str:   return f"<|channel|>{ch}"
 
 def render_harmony_prompt_with_complete_analysis(question: str, complete_analysis: str) -> str:
     parts = []
@@ -112,12 +88,10 @@ def parse_final_from_text(text: str) -> str:
     if not text:
         return ""
     m = _RE_FINAL.search(text)
-    if m:
-        return m.group(1).strip()
-    return text.strip()
+    return m.group(1).strip() if m else text.strip()
 
 # =========================
-# MODEL & INTERVENABLE INIT
+# MODEL & INTERVENABLE
 # =========================
 _TOKENIZER: AutoTokenizer | None = None
 _MODEL: AutoModelForCausalLM | None = None
@@ -129,23 +103,19 @@ def set_seed(seed: int = 1337):
         torch.cuda.manual_seed_all(seed)
 
 def init_model_and_tokenizer():
-    """Match the notebook: eager attention, no cache, pad_token=eos."""
+    """GPU-safe init; explicit attention_mask later."""
     global _TOKENIZER, _MODEL
     if _TOKENIZER is not None and _MODEL is not None:
         return
-    _TOKENIZER = AutoTokenizer.from_pretrained(
-        LOCAL_MODEL_ID,
-        trust_remote_code=True
-    )
+    _TOKENIZER = AutoTokenizer.from_pretrained(LOCAL_MODEL_ID, trust_remote_code=True)
     if _TOKENIZER.pad_token is None and _TOKENIZER.eos_token is not None:
         _TOKENIZER.pad_token = _TOKENIZER.eos_token
-
     _MODEL = AutoModelForCausalLM.from_pretrained(
         LOCAL_MODEL_ID,
         attn_implementation=ATTN_IMPL,
         dtype=DTYPE,
         use_cache=USE_CACHE,
-        device_map=DEVICE_MAP,          # "cpu" like the notebook; change to "auto" if desired
+        device_map=DEVICE_MAP,          # put on CUDA
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         local_files_only=True
@@ -153,21 +123,20 @@ def init_model_and_tokenizer():
     _MODEL.eval()
 
 def init_intervenable(layer: int = PATCH_LAYER, repr_name: str = "block_output"):
-    """Build Intervenable exactly like the notebook (with a fallback hook name)."""
+    """Notebook-style intervenable (scalar unit_locations); fallback to 'resid_post'."""
     global _INTERVENABLE
     if _INTERVENABLE is not None:
         return _INTERVENABLE
-
     mods = _lazy_imports()
     IntervenableModel = mods["IntervenableModel"]
     RepresentationConfig = mods["RepresentationConfig"]
     IntervenableConfig = mods["IntervenableConfig"]
     VanillaIntervention = mods["VanillaIntervention"]
 
-    # Try notebook's hook name first, then a common fallback
+    last_err = None
     for hook in (repr_name, "resid_post"):
         config = IntervenableConfig(
-            model_type=type(_MODEL),  # exactly like the notebook
+            model_type=type(_MODEL),
             representations=[RepresentationConfig(layer, hook)],
             intervention_types=[VanillaIntervention],
         )
@@ -184,17 +153,15 @@ def init_intervenable(layer: int = PATCH_LAYER, repr_name: str = "block_output")
             _INTERVENABLE = iv
             break
         except Exception as e:
-            _INTERVENABLE = None
             last_err = e
+            _INTERVENABLE = None
             continue
-
     if _INTERVENABLE is None:
-        raise RuntimeError(f"Failed to construct IntervenableModel (last error: {last_err})")
-
+        raise RuntimeError(f"Failed to build IntervenableModel; last error: {last_err}")
     return _INTERVENABLE
 
 # =========================
-# EDIT-INDEX DISCOVERY
+# EDIT-INDEX & POSITIONS
 # =========================
 def compute_edit_index(
     tokenizer: AutoTokenizer,
@@ -202,42 +169,44 @@ def compute_edit_index(
     up_to_edit_text: str,
     completed_analysis_text: str
 ) -> int:
-    """Use token LCP between prompts with (a) up_to_edit and (b) full analysis."""
-    prompt_prefix = render_harmony_prompt_with_complete_analysis(question, up_to_edit_text)
-    prompt_complete = render_harmony_prompt_with_complete_analysis(question, completed_analysis_text)
-
-    toks_prefix = tokenizer(prompt_prefix, return_tensors="pt")["input_ids"][0]
-    toks_complete = tokenizer(prompt_complete, return_tensors="pt")["input_ids"][0]
-
+    prompt_prefix  = render_harmony_prompt_with_complete_analysis(question, up_to_edit_text)
+    prompt_complete= render_harmony_prompt_with_complete_analysis(question, completed_analysis_text)
+    toks_prefix  = tokenizer(prompt_prefix, return_tensors="pt")["input_ids"][0]
+    toks_complete= tokenizer(prompt_complete, return_tensors="pt")["input_ids"][0]
     lcp = 0
     max_pref = min(len(toks_prefix), len(toks_complete))
     while lcp < max_pref and toks_prefix[lcp].item() == toks_complete[lcp].item():
         lcp += 1
-
     idx = lcp - 1
-    if idx < 0:
-        idx = 0
-    return idx
+    return max(idx, 0)
 
 def build_patch_positions(center_idx: int, window: int, seq_len: int) -> List[int]:
     return list(range(max(0, center_idx - window), min(seq_len - 1, center_idx + window) + 1))
 
 # =========================
-# GENERATION (BASELINE / PATCHED)
+# GENERATION
 # =========================
+def _to_model_device(ids: torch.Tensor) -> torch.Tensor:
+    return ids.to(next(_MODEL.parameters()).device)
+
+def _make_inputs(prompt: str):
+    ids = _TOKENIZER(prompt, return_tensors="pt")["input_ids"]
+    attn = torch.ones_like(ids)   # explicit attention_mask to silence warning
+    return _to_model_device(ids), _to_model_device(attn)
+
 def generate_baseline_answer(question: str, baseline_complete_analysis: str) -> str:
     init_model_and_tokenizer()
     prompt = render_harmony_prompt_with_complete_analysis(question, baseline_complete_analysis)
-    # keep on model's device
-    inputs = _TOKENIZER(prompt, return_tensors="pt")["input_ids"].to(next(_MODEL.parameters()).device)
+    input_ids, attention_mask = _make_inputs(prompt)
     with torch.no_grad():
-        logits = _MODEL.generate(
-            inputs,
+        out = _MODEL.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
             do_sample=False,
             max_new_tokens=MAX_NEW_TOKENS,
             pad_token_id=_TOKENIZER.eos_token_id
         )
-    decoded = _TOKENIZER.decode(logits[0], skip_special_tokens=False)
+    decoded = _TOKENIZER.decode(out[0], skip_special_tokens=False)
     return parse_final_from_text(decoded)
 
 def generate_with_activation_patch_single_pos(
@@ -248,59 +217,64 @@ def generate_with_activation_patch_single_pos(
     layer: int = PATCH_LAYER,
     window: int = PATCH_WINDOW
 ) -> str:
-    """
-    Apply a single-position vanilla activation patch for the first K steps,
-    one position per decode step (scalar unit_locations). Then continue without patching.
-    """
     init_model_and_tokenizer()
     intervenable = init_intervenable(layer=layer, repr_name="block_output")
 
-    dev = next(_MODEL.parameters()).device
-
-    # Render prompts
     base_prompt   = render_harmony_prompt_with_complete_analysis(question, base_complete_analysis)
     source_prompt = render_harmony_prompt_with_complete_analysis(question, source_complete_analysis)
 
-    # Tokenize input contexts (ids tensors)
-    base_ids   = _TOKENIZER(base_prompt, return_tensors="pt")["input_ids"].to(dev)
-    source_ids = _TOKENIZER(source_prompt, return_tensors="pt")["input_ids"].to(dev)
+    base_ids,   base_attn   = _make_inputs(base_prompt)
+    source_ids, source_attn = _make_inputs(source_prompt)
 
-    # Compute edit center and positions
+    # (Pyvene's Intervenable accepts dicts; include attention_mask for safety)
+    base_dict   = {"input_ids": base_ids,   "attention_mask": base_attn}
+    source_dict = {"input_ids": source_ids, "attention_mask": source_attn}
+
     center_idx = compute_edit_index(_TOKENIZER, question, up_to_edit_text, source_complete_analysis)
     patch_positions = build_patch_positions(center_idx, window, seq_len=base_ids.shape[1])
 
     output_str = ""
     pred_str = ""
-    END_ID = 200002  # notebook hard-codes <|return|> to 200002
+    END_ID = 200002  # <|return|>
 
     steps = 0
     K = len(patch_positions)
 
     while steps < MAX_NEW_TOKENS and pred_str != "<|return|>":
         if steps < K:
-            pos = patch_positions[steps]    # SCALAR index (matches notebook)
+            pos = patch_positions[steps]  # scalar (matches notebook)
             with torch.no_grad():
                 _, cf_outputs = intervenable(
-                    base   = {"input_ids": base_ids},
-                    sources= [{"input_ids": source_ids}],
+                    base    = base_dict,
+                    sources = [source_dict],
                     unit_locations={"sources->base": pos},
                 )
             next_id = cf_outputs.logits[0, -1].argmax(dim=-1)
         else:
             with torch.no_grad():
-                logits = _MODEL(input_ids=base_ids).logits
+                logits = _MODEL(input_ids=base_ids, attention_mask=base_attn).logits
             next_id = logits[0, -1].argmax(dim=-1)
 
-        if next_id.item() == END_ID:
+        if int(next_id.item()) == END_ID:
             break
 
         pred_str = _TOKENIZER.decode(next_id)
         output_str += pred_str
 
-        # Append chosen token to BOTH streams (keep aligned)
-        next_id_2d = next_id.unsqueeze(0).unsqueeze(0)  # (1,1)
+        # append next token to BOTH streams to keep them aligned
+        next_id_2d = next_id.unsqueeze(0).unsqueeze(0)
         base_ids   = torch.cat([base_ids,   next_id_2d], dim=1)
         source_ids = torch.cat([source_ids, next_id_2d], dim=1)
+        # grow masks by 1
+        one = torch.ones_like(next_id_2d)
+        base_attn   = torch.cat([base_attn,   one], dim=1)
+        source_attn = torch.cat([source_attn, one], dim=1)
+
+        # update dicts
+        base_dict["input_ids"] = base_ids
+        base_dict["attention_mask"] = base_attn
+        source_dict["input_ids"] = source_ids
+        source_dict["attention_mask"] = source_attn
 
         steps += 1
 
@@ -376,10 +350,7 @@ def summarize_and_plot(df: pd.DataFrame, plot_path: str):
 def main():
     set_seed(SEED)
 
-    # Read CSV
     df = pd.read_csv(INPUT_CSV)
-
-    # Required columns
     required_cols = [
         "phase", "trial_idx", "a", "b", "true_sum", "question",
         "reasoning_used_for_injection_edited",
@@ -390,13 +361,11 @@ def main():
     if missing:
         raise SystemExit(f"Missing required column(s): {missing}")
 
-    # Ensure output columns exist
     if "answer_after_injection" not in df.columns:
         df["answer_after_injection"] = ""
     if "label" not in df.columns:
         df["label"] = ""
 
-    # Map baseline completed reasoning by trial_idx
     baseline_map = {}
     for _, row in df[df["phase"].str.strip().str.lower() == "baseline"].iterrows():
         baseline_map[int(row["trial_idx"])] = {
@@ -404,7 +373,6 @@ def main():
             "complete_reasoning": str(row["reasoning_used_for_injection_edited"]),
         }
 
-    # Process
     for idx, row in df.iterrows():
         phase = str(row["phase"]).strip().lower()
         trial_idx = int(row["trial_idx"])
@@ -444,7 +412,6 @@ def main():
 
             df.at[idx, "answer_after_injection"] = final_text
             pred_int = first_int(final_text)
-
             altered = first_int(str(row["answer_altered_implied_edited"]))
             if pred_int == true_sum:
                 lab = "matches_true"
@@ -457,11 +424,8 @@ def main():
         if (idx + 1) % 10 == 0:
             print(f"Processed {idx+1}/{len(df)} rows...")
 
-    # Save results
     df.to_csv(OUTPUT_CSV, index=False)
     print(f"\nSaved scored results to {OUTPUT_CSV} (rows: {len(df)})")
-
-    # Summary + plot
     summarize_and_plot(df, PLOT_PNG)
     print(f"Saved plot to {PLOT_PNG}")
 
