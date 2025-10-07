@@ -2,14 +2,14 @@
 # gpt_oss_experiment_from_csv_activation_patch.py
 """
 Activation-Patching Experiment (CSV-driven, completed reasoning) — single-position loop
-GPU-safe: eager attention, no KV cache, device_map="auto", explicit attention_mask.
+Robust Pyvene init across builds; single-GPU load to avoid wrapper classes.
 """
 
 from __future__ import annotations
 
 import math
 import re
-from typing import List
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -39,11 +39,11 @@ PLOT_PNG    = "intervention_outcomes_activation_patch.png"
 
 LOCAL_MODEL_ID  = "/workspace/models/gpt-oss-20b"
 
-# Loader settings
-ATTN_IMPL   = "eager"       # important for hooks
-USE_CACHE   = False         # important for hooks
-DEVICE_MAP  = "auto"        # move to CUDA; avoids mxfp4 CPU error
-DTYPE       = torch.bfloat16
+# Loader settings — single GPU to avoid Accelerate wrappers
+DEVICE         = "cuda" if torch.cuda.is_available() else "cpu"
+ATTN_IMPL      = "eager"
+USE_CACHE      = False
+DTYPE          = torch.bfloat16
 
 # Patching config
 PATCH_LAYER     = 12
@@ -93,8 +93,8 @@ def parse_final_from_text(text: str) -> str:
 # =========================
 # MODEL & INTERVENABLE
 # =========================
-_TOKENIZER: AutoTokenizer | None = None
-_MODEL: AutoModelForCausalLM | None = None
+_TOKENIZER: Optional[AutoTokenizer] = None
+_MODEL: Optional[AutoModelForCausalLM] = None
 _INTERVENABLE = None
 
 def set_seed(seed: int = 1337):
@@ -103,61 +103,105 @@ def set_seed(seed: int = 1337):
         torch.cuda.manual_seed_all(seed)
 
 def init_model_and_tokenizer():
-    """GPU-safe init; explicit attention_mask later."""
+    """Single-device load (no Accelerate wrappers), eager attention, no cache."""
     global _TOKENIZER, _MODEL
     if _TOKENIZER is not None and _MODEL is not None:
         return
+
     _TOKENIZER = AutoTokenizer.from_pretrained(LOCAL_MODEL_ID, trust_remote_code=True)
     if _TOKENIZER.pad_token is None and _TOKENIZER.eos_token is not None:
         _TOKENIZER.pad_token = _TOKENIZER.eos_token
+
+    # Load on CPU first, then move to DEVICE to avoid accelerate wrappers
     _MODEL = AutoModelForCausalLM.from_pretrained(
         LOCAL_MODEL_ID,
         attn_implementation=ATTN_IMPL,
         dtype=DTYPE,
         use_cache=USE_CACHE,
-        device_map=DEVICE_MAP,          # put on CUDA
+        device_map=None,                # <-- important: no accelerate wrapper class
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         local_files_only=True
     )
+    _MODEL.to(DEVICE)
     _MODEL.eval()
 
-def init_intervenable(layer: int = PATCH_LAYER, repr_name: str = "block_output"):
-    """Notebook-style intervenable (scalar unit_locations); fallback to 'resid_post'."""
+def init_intervenable(layer: int = PATCH_LAYER):
+    """Try several Pyvene registrations (from_model, string 'gpt_oss', config.model_type, class)."""
     global _INTERVENABLE
     if _INTERVENABLE is not None:
         return _INTERVENABLE
+
     mods = _lazy_imports()
     IntervenableModel = mods["IntervenableModel"]
     RepresentationConfig = mods["RepresentationConfig"]
     IntervenableConfig = mods["IntervenableConfig"]
     VanillaIntervention = mods["VanillaIntervention"]
 
-    last_err = None
-    for hook in (repr_name, "resid_post"):
-        config = IntervenableConfig(
-            model_type=type(_MODEL),
-            representations=[RepresentationConfig(layer, hook)],
+    def build_config(model_type_value, repr_name):
+        return IntervenableConfig(
+            model_type=model_type_value,
+            representations=[RepresentationConfig(layer, repr_name)],
             intervention_types=[VanillaIntervention],
         )
+
+    # Attempts: repr in ["block_output","resid_post"] x model_type in [from_model, 'gpt_oss', config.model_type, class]
+    last_err = None
+    for repr_name in ("block_output", "resid_post"):
+        # Attempt 0: from_model (some builds support this)
         try:
-            iv = IntervenableModel(config, _MODEL)
-            if hasattr(iv, "set_device"):
-                try:
-                    dev = next(_MODEL.parameters()).device
-                    iv.set_device(str(dev))
-                except Exception:
-                    pass
-            if hasattr(iv, "disable_model_gradients"):
-                iv.disable_model_gradients()
+            if hasattr(IntervenableModel, "from_model"):
+                iv = IntervenableModel.from_model(
+                    _MODEL,
+                    representations=[RepresentationConfig(layer, repr_name)],
+                    intervention_types=[VanillaIntervention],
+                )
+                _INTERVENABLE = iv
+                break
+        except Exception as e:
+            last_err = e
+
+        # Attempt 1: explicit string key
+        try:
+            cfg = build_config("gpt_oss", repr_name)
+            iv = IntervenableModel(cfg, _MODEL)
+            _INTERVENABLE = iv
+            break
+        except Exception as e:
+            last_err = e
+
+        # Attempt 2: whatever HF config advertises
+        try:
+            cfg = build_config(getattr(_MODEL.config, "model_type", None), repr_name)
+            iv = IntervenableModel(cfg, _MODEL)
+            _INTERVENABLE = iv
+            break
+        except Exception as e:
+            last_err = e
+
+        # Attempt 3: the raw class (works in some pyvene versions)
+        try:
+            cfg = build_config(type(_MODEL), repr_name)
+            iv = IntervenableModel(cfg, _MODEL)
             _INTERVENABLE = iv
             break
         except Exception as e:
             last_err = e
             _INTERVENABLE = None
             continue
+
     if _INTERVENABLE is None:
         raise RuntimeError(f"Failed to build IntervenableModel; last error: {last_err}")
+
+    # Device / grad niceties
+    if hasattr(_INTERVENABLE, "set_device"):
+        try:
+            _INTERVENABLE.set_device(DEVICE)
+        except Exception:
+            pass
+    if hasattr(_INTERVENABLE, "disable_model_gradients"):
+        _INTERVENABLE.disable_model_gradients()
+
     return _INTERVENABLE
 
 # =========================
@@ -187,11 +231,11 @@ def build_patch_positions(center_idx: int, window: int, seq_len: int) -> List[in
 # GENERATION
 # =========================
 def _to_model_device(ids: torch.Tensor) -> torch.Tensor:
-    return ids.to(next(_MODEL.parameters()).device)
+    return ids.to(DEVICE)
 
 def _make_inputs(prompt: str):
     ids = _TOKENIZER(prompt, return_tensors="pt")["input_ids"]
-    attn = torch.ones_like(ids)   # explicit attention_mask to silence warning
+    attn = torch.ones_like(ids)   # explicit attention_mask
     return _to_model_device(ids), _to_model_device(attn)
 
 def generate_baseline_answer(question: str, baseline_complete_analysis: str) -> str:
@@ -218,7 +262,7 @@ def generate_with_activation_patch_single_pos(
     window: int = PATCH_WINDOW
 ) -> str:
     init_model_and_tokenizer()
-    intervenable = init_intervenable(layer=layer, repr_name="block_output")
+    intervenable = init_intervenable(layer=layer)
 
     base_prompt   = render_harmony_prompt_with_complete_analysis(question, base_complete_analysis)
     source_prompt = render_harmony_prompt_with_complete_analysis(question, source_complete_analysis)
@@ -226,7 +270,6 @@ def generate_with_activation_patch_single_pos(
     base_ids,   base_attn   = _make_inputs(base_prompt)
     source_ids, source_attn = _make_inputs(source_prompt)
 
-    # (Pyvene's Intervenable accepts dicts; include attention_mask for safety)
     base_dict   = {"input_ids": base_ids,   "attention_mask": base_attn}
     source_dict = {"input_ids": source_ids, "attention_mask": source_attn}
 
@@ -242,7 +285,7 @@ def generate_with_activation_patch_single_pos(
 
     while steps < MAX_NEW_TOKENS and pred_str != "<|return|>":
         if steps < K:
-            pos = patch_positions[steps]  # scalar (matches notebook)
+            pos = patch_positions[steps]  # scalar index (like the notebook)
             with torch.no_grad():
                 _, cf_outputs = intervenable(
                     base    = base_dict,
@@ -265,12 +308,10 @@ def generate_with_activation_patch_single_pos(
         next_id_2d = next_id.unsqueeze(0).unsqueeze(0)
         base_ids   = torch.cat([base_ids,   next_id_2d], dim=1)
         source_ids = torch.cat([source_ids, next_id_2d], dim=1)
-        # grow masks by 1
         one = torch.ones_like(next_id_2d)
         base_attn   = torch.cat([base_attn,   one], dim=1)
         source_attn = torch.cat([source_attn, one], dim=1)
 
-        # update dicts
         base_dict["input_ids"] = base_ids
         base_dict["attention_mask"] = base_attn
         source_dict["input_ids"] = source_ids
