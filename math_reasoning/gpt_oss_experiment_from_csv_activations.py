@@ -2,21 +2,14 @@
 # gpt_oss_experiment_from_csv_activation_patch.py
 """
 Activation-Patching Experiment (CSV-driven, completed reasoning) — single-position loop
+Aligned with the working notebook semantics (eager attention, no KV cache).
 
 What this does
 --------------
-- Loads baseline & intervention rows from perturbation_results_edited.csv.
-- BASELINE rows: run normally (no intervention).
+- BASELINE rows: run normally (no patch).
 - INTERVENTION rows: build BASE prompt (baseline reasoning) and SOURCE prompt (altered reasoning),
   locate the edit via the tokenized length of the "up to edit" text, and patch a small neighborhood
   one position at a time across the first few decode steps.
-- Labels results and writes a plot with Wilson 95% CIs.
-
-Key behaviors
--------------
-- Activation patching applies ONLY on intervention rows.
-- Patch layer configurable (default 12).
-- Small window around edit index; one position per decode step (then no patching).
 
 Outputs
 -------
@@ -46,7 +39,7 @@ def _lazy_imports():
         "IntervenableConfig": getattr(py, "IntervenableConfig"),
     }
 
-# ---- import your small helpers (first_int) from the utilities module ----
+# ---- small helper from your utilities ----
 from gpt_oss_experiment_utilities import first_int
 
 # =========================
@@ -56,17 +49,22 @@ INPUT_CSV   = "perturbation_results_edited.csv"
 OUTPUT_CSV  = "perturbation_results_edited_scored_activation_patch.csv"
 PLOT_PNG    = "intervention_outcomes_activation_patch.png"
 
-# Local model config (adjust as needed)
-REASONING_MODEL = "local/gpt-oss-20b"                 # marker for logs
-LOCAL_MODEL_ID  = "/workspace/models/gpt-oss-20b"     # local path to model
+# Model path (match your local path)
+LOCAL_MODEL_ID  = "/workspace/models/gpt-oss-20b"
+
+# Loader settings to match notebook behavior
+DEVICE_MAP      = "cpu"        # notebook used CPU; set to "auto" or specific CUDA if desired
+ATTN_IMPL       = "eager"      # IMPORTANT: eager attention
+USE_CACHE       = False        # IMPORTANT: disable KV cache for Pyvene hooks
+DTYPE           = torch.bfloat16
 
 # Patching config
-PATCH_LAYER       = 12          # which layer representation to patch
-PATCH_WINDOW      = 2           # small neighborhood size: positions [idx - W .. idx + W]
+PATCH_LAYER       = 12
+PATCH_WINDOW      = 2           # patch positions [idx - W .. idx + W]
 MAX_NEW_TOKENS    = 512
 SEED              = 1337
 
-# Harmony scaffolding (aligned with earlier scripts)
+# Harmony scaffold
 SYSTEM_IDENTITY = (
     "You are ChatGPT, a large language model trained by OpenAI.\n"
     "Knowledge cutoff: 2024-06\n"
@@ -99,11 +97,6 @@ def _h_channel(ch: str) -> str:
     return f"<|channel|>{ch}"
 
 def render_harmony_prompt_with_complete_analysis(question: str, complete_analysis: str) -> str:
-    """
-    Build a Harmony-formatted conversation with CLOSED assistant/analysis
-    containing the provided completed reasoning, then open a new assistant turn
-    for the model to emit <|channel|>final.
-    """
     parts = []
     parts.append(_h_start("system") + _h_msg(SYSTEM_IDENTITY) + _h_end())
     parts.append(_h_start("developer") + _h_msg(DEVELOPER_INSTRUCTIONS) + _h_end())
@@ -136,6 +129,7 @@ def set_seed(seed: int = 1337):
         torch.cuda.manual_seed_all(seed)
 
 def init_model_and_tokenizer():
+    """Match the notebook: eager attention, no cache, pad_token=eos."""
     global _TOKENIZER, _MODEL
     if _TOKENIZER is not None and _MODEL is not None:
         return
@@ -143,91 +137,59 @@ def init_model_and_tokenizer():
         LOCAL_MODEL_ID,
         trust_remote_code=True
     )
+    if _TOKENIZER.pad_token is None and _TOKENIZER.eos_token is not None:
+        _TOKENIZER.pad_token = _TOKENIZER.eos_token
+
     _MODEL = AutoModelForCausalLM.from_pretrained(
         LOCAL_MODEL_ID,
-        dtype=getattr(torch, "bfloat16", None),
-        device_map="auto",
+        attn_implementation=ATTN_IMPL,
+        dtype=DTYPE,
+        use_cache=USE_CACHE,
+        device_map=DEVICE_MAP,          # "cpu" like the notebook; change to "auto" if desired
         trust_remote_code=True,
         low_cpu_mem_usage=True,
         local_files_only=True
     )
     _MODEL.eval()
 
-def _build_intervenable_config(repr_name: str = "block_output", layer: int = PATCH_LAYER):
-    mods = _lazy_imports()
-    RepresentationConfig = mods["RepresentationConfig"]
-    IntervenableConfig = mods["IntervenableConfig"]
-    return IntervenableConfig(
-        model_type=None,  # will be filled in by init_intervenable() depending on Pyvene flavor
-        representations=[RepresentationConfig(layer, repr_name)],
-        intervention_types=[_lazy_imports()["VanillaIntervention"]],
-    )
-
-def init_intervenable(layer: int = PATCH_LAYER):
-    """
-    Robust builder for different Pyvene builds:
-    1) Try IntervenableModel.from_model(model, ...) when available.
-    2) Else try IntervenableModel(IntervenableConfig(model_type=model.config.model_type), model).
-    3) Else try IntervenableModel(IntervenableConfig(model_type=type(model)), model).
-    Also try alternate representation names: 'block_output' then 'resid_post'.
-    """
+def init_intervenable(layer: int = PATCH_LAYER, repr_name: str = "block_output"):
+    """Build Intervenable exactly like the notebook (with a fallback hook name)."""
     global _INTERVENABLE
     if _INTERVENABLE is not None:
         return _INTERVENABLE
 
     mods = _lazy_imports()
     IntervenableModel = mods["IntervenableModel"]
+    RepresentationConfig = mods["RepresentationConfig"]
+    IntervenableConfig = mods["IntervenableConfig"]
+    VanillaIntervention = mods["VanillaIntervention"]
 
-    for repr_name in ("block_output", "resid_post"):
-        cfg = _build_intervenable_config(repr_name=repr_name, layer=layer)
-
-        # Attempt 1: from_model (preferred)
+    # Try notebook's hook name first, then a common fallback
+    for hook in (repr_name, "resid_post"):
+        config = IntervenableConfig(
+            model_type=type(_MODEL),  # exactly like the notebook
+            representations=[RepresentationConfig(layer, hook)],
+            intervention_types=[VanillaIntervention],
+        )
         try:
-            if hasattr(IntervenableModel, "from_model"):
-                iv = IntervenableModel.from_model(
-                    _MODEL,
-                    representations=cfg.representations,
-                    intervention_types=cfg.intervention_types
-                )
-                _INTERVENABLE = iv
-                break
-        except Exception:
-            pass
-
-        # Attempt 2: model_type as string from config
-        try:
-            cfg.model_type = getattr(_MODEL.config, "model_type", None)
-            iv = IntervenableModel(cfg, _MODEL)
+            iv = IntervenableModel(config, _MODEL)
+            if hasattr(iv, "set_device"):
+                try:
+                    dev = next(_MODEL.parameters()).device
+                    iv.set_device(str(dev))
+                except Exception:
+                    pass
+            if hasattr(iv, "disable_model_gradients"):
+                iv.disable_model_gradients()
             _INTERVENABLE = iv
             break
-        except Exception:
-            pass
-
-        # Attempt 3: model_type as class
-        try:
-            cfg.model_type = _MODEL.__class__
-            iv = IntervenableModel(cfg, _MODEL)
-            _INTERVENABLE = iv
-            break
-        except Exception:
+        except Exception as e:
             _INTERVENABLE = None
+            last_err = e
             continue
 
     if _INTERVENABLE is None:
-        raise RuntimeError(
-            "Failed to construct IntervenableModel (tried from_model, model_type string, and class; "
-            "also tried repr names 'block_output' and 'resid_post')."
-        )
-
-    # Device / grad niceties
-    if hasattr(_INTERVENABLE, "set_device"):
-        try:
-            dev = next(_MODEL.parameters()).device
-            _INTERVENABLE.set_device(str(dev))
-        except Exception:
-            pass
-    if hasattr(_INTERVENABLE, "disable_model_gradients"):
-        _INTERVENABLE.disable_model_gradients()
+        raise RuntimeError(f"Failed to construct IntervenableModel (last error: {last_err})")
 
     return _INTERVENABLE
 
@@ -240,12 +202,7 @@ def compute_edit_index(
     up_to_edit_text: str,
     completed_analysis_text: str
 ) -> int:
-    """
-    Render two prompts with identical Harmony scaffolding:
-      1) analysis == up_to_edit_text
-      2) analysis == completed_analysis_text
-    Then return (len(tokens for #1) - 1) as the pivot index.
-    """
+    """Use token LCP between prompts with (a) up_to_edit and (b) full analysis."""
     prompt_prefix = render_harmony_prompt_with_complete_analysis(question, up_to_edit_text)
     prompt_complete = render_harmony_prompt_with_complete_analysis(question, completed_analysis_text)
 
@@ -269,99 +226,85 @@ def build_patch_positions(center_idx: int, window: int, seq_len: int) -> List[in
 # GENERATION (BASELINE / PATCHED)
 # =========================
 def generate_baseline_answer(question: str, baseline_complete_analysis: str) -> str:
-    """
-    No activation patching. Use model.generate on the fully-rendered prompt.
-    """
     init_model_and_tokenizer()
     prompt = render_harmony_prompt_with_complete_analysis(question, baseline_complete_analysis)
-    inputs = _TOKENIZER(prompt, return_tensors="pt").to(_MODEL.device)
+    # keep on model's device
+    inputs = _TOKENIZER(prompt, return_tensors="pt")["input_ids"].to(next(_MODEL.parameters()).device)
     with torch.no_grad():
-        gen = _MODEL.generate(
-            **inputs,
+        logits = _MODEL.generate(
+            inputs,
             do_sample=False,
             max_new_tokens=MAX_NEW_TOKENS,
             pad_token_id=_TOKENIZER.eos_token_id
         )
-    decoded = _TOKENIZER.decode(gen[0], skip_special_tokens=False)
+    decoded = _TOKENIZER.decode(logits[0], skip_special_tokens=False)
     return parse_final_from_text(decoded)
-
-def _get_return_token_id(tokenizer: AutoTokenizer, default_id: int = 200002) -> int:
-    # Try to find <|return|> by token; fall back to known id
-    try:
-        rtok_id = tokenizer.convert_tokens_to_ids("<|return|>")
-        if isinstance(rtok_id, int) and rtok_id > 0:
-            return rtok_id
-    except Exception:
-        pass
-    return default_id
 
 def generate_with_activation_patch_single_pos(
     question: str,
-    base_complete_analysis: str,      # baseline reasoning (as COMPLETE analysis)
-    source_complete_analysis: str,    # intervention reasoning (as COMPLETE analysis)
-    up_to_edit_text: str,             # used to locate patch site
+    base_complete_analysis: str,      # baseline reasoning (complete)
+    source_complete_analysis: str,    # altered reasoning (complete)
+    up_to_edit_text: str,             # for locating patch site
     layer: int = PATCH_LAYER,
     window: int = PATCH_WINDOW
 ) -> str:
     """
-    Decode greedily while applying a single-position vanilla activation patch for the
-    first K steps, where each step uses one token position from the small window
-    around the edit site. After K steps, continue decoding without patching.
+    Apply a single-position vanilla activation patch for the first K steps,
+    one position per decode step (scalar unit_locations). Then continue without patching.
     """
     init_model_and_tokenizer()
-    intervenable = init_intervenable(layer=layer)
+    intervenable = init_intervenable(layer=layer, repr_name="block_output")
+
+    dev = next(_MODEL.parameters()).device
 
     # Render prompts
     base_prompt   = render_harmony_prompt_with_complete_analysis(question, base_complete_analysis)
     source_prompt = render_harmony_prompt_with_complete_analysis(question, source_complete_analysis)
 
-    # Tokenize input contexts
-    base_tokens   = _TOKENIZER(base_prompt, return_tensors="pt")["input_ids"].to(_MODEL.device)
-    source_tokens = _TOKENIZER(source_prompt, return_tensors="pt")["input_ids"].to(_MODEL.device)
+    # Tokenize input contexts (ids tensors)
+    base_ids   = _TOKENIZER(base_prompt, return_tensors="pt")["input_ids"].to(dev)
+    source_ids = _TOKENIZER(source_prompt, return_tensors="pt")["input_ids"].to(dev)
 
-    # Compute edit center and the small range
+    # Compute edit center and positions
     center_idx = compute_edit_index(_TOKENIZER, question, up_to_edit_text, source_complete_analysis)
-    patch_positions = build_patch_positions(center_idx, window, seq_len=base_tokens.shape[1])
+    patch_positions = build_patch_positions(center_idx, window, seq_len=base_ids.shape[1])
 
     output_str = ""
     pred_str = ""
-    end_token_id = _get_return_token_id(_TOKENIZER, default_id=200002)
+    END_ID = 200002  # notebook hard-codes <|return|> to 200002
 
     steps = 0
     K = len(patch_positions)
 
     while steps < MAX_NEW_TOKENS and pred_str != "<|return|>":
         if steps < K:
-            # Single-position patch for this step
-            pos = patch_positions[steps]
-            unit_loc = {"sources->base": [pos]}  # some Pyvene builds require a list
+            pos = patch_positions[steps]    # SCALAR index (matches notebook)
             with torch.no_grad():
                 _, cf_outputs = intervenable(
-                    base={"input_ids": base_tokens},
-                    sources=[{"input_ids": source_tokens}],
-                    unit_locations=unit_loc,
+                    base   = {"input_ids": base_ids},
+                    sources= [{"input_ids": source_ids}],
+                    unit_locations={"sources->base": pos},
                 )
             next_id = cf_outputs.logits[0, -1].argmax(dim=-1)
         else:
-            # No patching; plain forward on BASE tokens
             with torch.no_grad():
-                logits = _MODEL(input_ids=base_tokens).logits
+                logits = _MODEL(input_ids=base_ids).logits
             next_id = logits[0, -1].argmax(dim=-1)
 
-        if int(next_id.item()) == int(end_token_id):
+        if next_id.item() == END_ID:
             break
 
         pred_str = _TOKENIZER.decode(next_id)
         output_str += pred_str
 
-        # Append the chosen token to BOTH streams to keep them aligned
-        next_id_2d = next_id.unsqueeze(0).unsqueeze(0)  # shape (1,1)
-        base_tokens = torch.cat([base_tokens, next_id_2d], dim=1)
-        source_tokens = torch.cat([source_tokens, next_id_2d], dim=1)
+        # Append chosen token to BOTH streams (keep aligned)
+        next_id_2d = next_id.unsqueeze(0).unsqueeze(0)  # (1,1)
+        base_ids   = torch.cat([base_ids,   next_id_2d], dim=1)
+        source_ids = torch.cat([source_ids, next_id_2d], dim=1)
 
         steps += 1
 
-    full_text = _TOKENIZER.decode(base_tokens[0], skip_special_tokens=False) + output_str
+    full_text = _TOKENIZER.decode(base_ids[0], skip_special_tokens=False) + output_str
     return parse_final_from_text(full_text)
 
 # =========================
@@ -436,7 +379,7 @@ def main():
     # Read CSV
     df = pd.read_csv(INPUT_CSV)
 
-    # Sanity check for required columns
+    # Required columns
     required_cols = [
         "phase", "trial_idx", "a", "b", "true_sum", "question",
         "reasoning_used_for_injection_edited",
@@ -476,7 +419,6 @@ def main():
             df.at[idx, "label"] = "correct" if (pred_int == true_sum) else "incorrect"
 
         else:
-            # INTERVENTION via single-position activation patching
             if trial_idx not in baseline_map:
                 df.at[idx, "label"] = "intervention_failed"
                 df.at[idx, "answer_after_injection"] = "[error: missing baseline for trial]"
